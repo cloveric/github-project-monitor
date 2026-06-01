@@ -59,12 +59,19 @@ function isReleaseCheckout(project) {
   return project.kind !== "npm" && !project.upstream && project.current_tag;
 }
 
+function isLatestReleaseCheckout(project) {
+  return isReleaseCheckout(project) && project.latest_release && project.current_tag === project.latest_release;
+}
+
 function branchLine(project) {
   if (project.kind === "npm") {
     return `${escapeHtml(project.source || "npm")} <span class="meta-text">${escapeHtml(project.package)}</span>`;
   }
   if (isReleaseCheckout(project)) {
-    return `${escapeHtml(project.current_tag)} <span class="meta-text">detached release checkout</span>`;
+    const releaseLabel = isLatestReleaseCheckout(project)
+      ? "latest release installed"
+      : "release tag installed";
+    return `${escapeHtml(project.current_tag)} <span class="meta-text">${releaseLabel}</span>`;
   }
   const upstream = project.upstream || "no upstream";
   return `${escapeHtml(project.branch)} <span class="meta-text">${escapeHtml(upstream)}</span>`;
@@ -75,7 +82,10 @@ function commitLine(project) {
       return `<strong>${escapeHtml(project.configured_version || "latest")}</strong> configured`;
   }
   if (isReleaseCheckout(project)) {
-    return `<strong>Release checkout</strong> <span class="meta-text">not tracking a branch</span>`;
+    if (isLatestReleaseCheckout(project)) {
+      return `<strong>Up to date</strong> <span class="meta-text">latest release installed</span>`;
+    }
+    return `<strong>Release installed</strong> <span class="meta-text">branch comparison skipped</span>`;
   }
   if (project.ahead == null || project.behind == null) {
     return `<strong>No upstream comparison</strong> <span class="meta-text">counts unavailable</span>`;
