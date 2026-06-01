@@ -25,6 +25,32 @@ from github_watch import (
 
 
 class GitHubWatchTests(unittest.TestCase):
+    def git(self, args, cwd):
+        return subprocess.run(
+            ["git", *args],
+            cwd=cwd,
+            check=True,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+
+    def commit_file(self, repo: Path, name: str, body: str, message: str):
+        (repo / name).write_text(body, encoding="utf-8")
+        self.git(["add", name], repo)
+        self.git(
+            [
+                "-c",
+                "user.email=test@example.com",
+                "-c",
+                "user.name=Test",
+                "commit",
+                "-m",
+                message,
+            ],
+            repo,
+        )
+
     def test_repo_slug_from_common_github_remote_forms(self):
         self.assertEqual(
             repo_slug_from_url("https://github.com/openai/skills.git"),
@@ -222,28 +248,68 @@ class GitHubWatchTests(unittest.TestCase):
         with TemporaryDirectory() as tmpdir:
             repo = Path(tmpdir) / "release"
             repo.mkdir()
-            subprocess.run(["git", "init"], cwd=repo, check=True, stdout=subprocess.PIPE)
-            (repo / "README.md").write_text("release repo", encoding="utf-8")
-            subprocess.run(["git", "add", "README.md"], cwd=repo, check=True, stdout=subprocess.PIPE)
-            subprocess.run(
-                [
-                    "git",
-                    "-c",
-                    "user.email=test@example.com",
-                    "-c",
-                    "user.name=Test",
-                    "commit",
-                    "-m",
-                    "initial",
-                ],
-                cwd=repo,
-                check=True,
-                stdout=subprocess.PIPE,
-            )
-            subprocess.run(["git", "tag", "v1.0.0"], cwd=repo, check=True, stdout=subprocess.PIPE)
+            self.git(["init"], repo)
+            self.commit_file(repo, "README.md", "release repo", "initial")
+            self.git(["tag", "v1.0.0"], repo)
+
+            with (
+                patch("github_watch.latest_release", return_value=("v1.0.0", None)),
+                patch("github_watch.fetch_remotes_without_tags"),
+                patch("github_watch.fetch_tag"),
+            ):
+                result = update_project_to_release(str(repo), repo="owner/release")
+
+            self.assertEqual(result["action"], "updateRelease")
+            self.assertEqual(result["tag"], "v1.0.0")
+
+    def test_update_commit_ignores_conflicting_unrelated_remote_tags(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            upstream = root / "upstream"
+            remote = root / "remote.git"
+            local = root / "local"
+
+            upstream.mkdir()
+            self.git(["init", "-b", "main"], upstream)
+            self.commit_file(upstream, "README.md", "one", "initial")
+            self.git(["tag", "moved-tag"], upstream)
+            self.git(["clone", "--bare", str(upstream), str(remote)], root)
+            self.git(["clone", str(remote), str(local)], root)
+
+            self.git(["remote", "add", "origin", str(remote)], upstream)
+            self.commit_file(upstream, "README.md", "two", "second")
+            self.git(["tag", "-f", "moved-tag"], upstream)
+            self.git(["push", "origin", "main"], upstream)
+            self.git(["push", "--force", "origin", "refs/tags/moved-tag"], upstream)
+
+            result = update_project_to_commit(str(local))
+
+            self.assertEqual(result["action"], "updateCommit")
+            self.assertEqual((local / "README.md").read_text(encoding="utf-8"), "two")
+
+    def test_update_release_fetches_only_target_tag_when_other_tags_conflict(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            upstream = root / "upstream"
+            remote = root / "remote.git"
+            local = root / "local"
+
+            upstream.mkdir()
+            self.git(["init", "-b", "main"], upstream)
+            self.commit_file(upstream, "README.md", "one", "initial")
+            self.git(["tag", "v1.0.0"], upstream)
+            self.git(["tag", "moved-tag"], upstream)
+            self.git(["clone", "--bare", str(upstream), str(remote)], root)
+            self.git(["clone", str(remote), str(local)], root)
+
+            self.git(["remote", "add", "origin", str(remote)], upstream)
+            self.commit_file(upstream, "README.md", "two", "second")
+            self.git(["tag", "-f", "moved-tag"], upstream)
+            self.git(["push", "origin", "main"], upstream)
+            self.git(["push", "--force", "origin", "refs/tags/moved-tag"], upstream)
 
             with patch("github_watch.latest_release", return_value=("v1.0.0", None)):
-                result = update_project_to_release(str(repo), repo="owner/release")
+                result = update_project_to_release(str(local), repo="owner/release")
 
             self.assertEqual(result["action"], "updateRelease")
             self.assertEqual(result["tag"], "v1.0.0")

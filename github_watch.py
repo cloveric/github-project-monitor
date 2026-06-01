@@ -698,6 +698,32 @@ def ensure_git_worktree(path: str) -> Path:
     return Path(top).resolve() if top else resolved
 
 
+def primary_remote(path: str) -> str | None:
+    output = git_output(path, ["remote"])
+    remotes = [line.strip() for line in (output or "").splitlines() if line.strip()]
+    if "origin" in remotes:
+        return "origin"
+    return remotes[0] if remotes else None
+
+
+def fetch_remotes_without_tags(path: str) -> None:
+    fetch = run_git(path, ["fetch", "--all", "--prune", "--no-tags"])
+    if fetch.returncode != 0:
+        raise ActionError((fetch.stderr or fetch.stdout or "git fetch failed").strip())
+
+
+def fetch_tag(path: str, tag: str) -> None:
+    remote = primary_remote(path)
+    if not remote:
+        if run_git(path, ["rev-parse", "--verify", f"{tag}^{{}}"]).returncode == 0:
+            return
+        raise ActionError(f"no git remote configured for fetching tag {tag}")
+
+    fetch = run_git(path, ["fetch", "--force", remote, f"refs/tags/{tag}:refs/tags/{tag}"])
+    if fetch.returncode != 0:
+        raise ActionError((fetch.stderr or fetch.stdout or f"git fetch tag {tag} failed").strip())
+
+
 def require_clean_worktree(path: Path) -> None:
     status_output = git_output(str(path), ["status", "--porcelain"]) or ""
     if status_output:
@@ -745,10 +771,7 @@ def install_repository(repo: str, install_root: str | None = None) -> dict[str, 
 def update_project_to_commit(path: str) -> dict[str, Any]:
     worktree = ensure_git_worktree(path)
     require_clean_worktree(worktree)
-
-    fetch = run_git(str(worktree), ["fetch", "--all", "--tags", "--prune"])
-    if fetch.returncode != 0:
-        raise ActionError((fetch.stderr or fetch.stdout or "git fetch failed").strip())
+    fetch_remotes_without_tags(str(worktree))
 
     pull = run_git(str(worktree), ["pull", "--ff-only"])
     if pull.returncode != 0:
@@ -774,13 +797,12 @@ def update_project_to_release(
     if not is_github_repo_slug(inferred_repo):
         raise ActionError(f"cannot infer GitHub repo for {worktree}")
 
-    fetch = run_git(str(worktree), ["fetch", "--all", "--tags", "--prune"])
-    if fetch.returncode != 0:
-        raise ActionError((fetch.stderr or fetch.stdout or "git fetch failed").strip())
-
     latest_tag, _published_at = latest_release(str(inferred_repo), include_prereleases)
     if not latest_tag:
         raise ActionError(f"no GitHub release found for {inferred_repo}")
+
+    fetch_remotes_without_tags(str(worktree))
+    fetch_tag(str(worktree), latest_tag)
 
     checkout = run_git(str(worktree), ["checkout", "--detach", latest_tag])
     if checkout.returncode != 0:
