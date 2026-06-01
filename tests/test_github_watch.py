@@ -1,12 +1,26 @@
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from unittest.mock import patch
+import subprocess
 
 from github_watch import (
+    ActionError,
     classify_package_version,
     classify_branch_status,
     classify_release_status,
+    infer_category,
+    is_github_repo_slug,
+    merge_project_entries,
+    normalize_github_repository,
+    parse_git_porcelain,
     parse_ahead_behind,
+    perform_action,
     repo_slug_from_url,
     select_latest_release,
+    trash_project,
+    update_project_to_commit,
+    update_project_to_release,
 )
 
 
@@ -98,6 +112,145 @@ class GitHubWatchTests(unittest.TestCase):
             classify_package_version("latest", None),
             "version-unavailable",
         )
+
+    def test_github_repo_slug_validation(self):
+        self.assertTrue(is_github_repo_slug("openai/skills"))
+        self.assertTrue(is_github_repo_slug("cloveric/github-project-monitor"))
+        self.assertFalse(is_github_repo_slug("https://github.com/openai/skills"))
+        self.assertFalse(is_github_repo_slug("../openai/skills"))
+
+    def test_parse_git_porcelain_counts_local_pollution(self):
+        summary = parse_git_porcelain(" M README.md\n?? scratch.txt\n D old.txt\n")
+
+        self.assertEqual(summary["dirty_files"], 3)
+        self.assertEqual(summary["untracked_files"], 1)
+        self.assertEqual(summary["modified_files"], 1)
+        self.assertEqual(summary["deleted_files"], 1)
+
+    def test_infer_category_covers_skills_plugins_and_mcp_packages(self):
+        self.assertEqual(
+            infer_category(
+                "npm:@playwright/mcp@latest",
+                {"type": "npm", "name": "playwright-mcp"},
+            ),
+            "mcp",
+        )
+        self.assertEqual(
+            infer_category("/Users/me/.claude/plugins/marketplaces/example"),
+            "plugin",
+        )
+        self.assertEqual(
+            infer_category("/Users/me/projects/example", {"category": "app"}),
+            "app",
+        )
+
+    def test_merge_project_entries_deduplicates_watchlist_and_scan_results(self):
+        primary = [
+            {
+                "name": "monitor",
+                "repo": "cloveric/github-project-monitor",
+                "path": "/Users/me/projects/github-project-monitor",
+            }
+        ]
+        discovered = [
+            {
+                "name": "monitor",
+                "repo": "cloveric/github-project-monitor",
+                "path": "/Users/me/other/github-project-monitor",
+            },
+            {
+                "name": "skills",
+                "repo": "openai/skills",
+                "path": "/Users/me/.codex/skills",
+            },
+        ]
+
+        merged = merge_project_entries(primary, discovered)
+
+        self.assertEqual([item["repo"] for item in merged], [
+            "cloveric/github-project-monitor",
+            "openai/skills",
+        ])
+
+    def test_normalize_github_repository_keeps_store_fields(self):
+        normalized = normalize_github_repository(
+            {
+                "name": "skills",
+                "full_name": "openai/skills",
+                "owner": {"login": "openai"},
+                "description": "Agent skills",
+                "private": False,
+                "stargazers_count": 42,
+                "forks_count": 7,
+                "default_branch": "main",
+                "html_url": "https://github.com/openai/skills",
+            }
+        )
+
+        self.assertEqual(normalized["full_name"], "openai/skills")
+        self.assertEqual(normalized["visibility"], "public")
+        self.assertEqual(normalized["stars"], 42)
+
+    def test_trash_project_moves_clean_git_worktree_to_local_trash(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            repo = root / "demo"
+            repo.mkdir()
+            subprocess.run(["git", "init"], cwd=repo, check=True, stdout=subprocess.PIPE)
+
+            with patch("github_watch.Path.home", return_value=root):
+                result = trash_project(str(repo))
+
+            self.assertEqual(result["action"], "uninstall")
+            self.assertFalse(repo.exists())
+            self.assertTrue(Path(result["trashedTo"]).exists())
+            self.assertTrue(str(result["trashedTo"]).startswith(str(root / ".local")))
+
+    def test_update_commit_refuses_dirty_worktree_before_fetching(self):
+        with TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir) / "dirty"
+            repo.mkdir()
+            subprocess.run(["git", "init"], cwd=repo, check=True, stdout=subprocess.PIPE)
+            (repo / "scratch.txt").write_text("local work", encoding="utf-8")
+
+            with self.assertRaises(ActionError) as context:
+                update_project_to_commit(str(repo))
+
+            self.assertIn("worktree is dirty", str(context.exception))
+
+    def test_update_release_checks_out_latest_release_tag(self):
+        with TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir) / "release"
+            repo.mkdir()
+            subprocess.run(["git", "init"], cwd=repo, check=True, stdout=subprocess.PIPE)
+            (repo / "README.md").write_text("release repo", encoding="utf-8")
+            subprocess.run(["git", "add", "README.md"], cwd=repo, check=True, stdout=subprocess.PIPE)
+            subprocess.run(
+                [
+                    "git",
+                    "-c",
+                    "user.email=test@example.com",
+                    "-c",
+                    "user.name=Test",
+                    "commit",
+                    "-m",
+                    "initial",
+                ],
+                cwd=repo,
+                check=True,
+                stdout=subprocess.PIPE,
+            )
+            subprocess.run(["git", "tag", "v1.0.0"], cwd=repo, check=True, stdout=subprocess.PIPE)
+
+            with patch("github_watch.latest_release", return_value=("v1.0.0", None)):
+                result = update_project_to_release(str(repo), repo="owner/release")
+
+            self.assertEqual(result["action"], "updateRelease")
+            self.assertEqual(result["tag"], "v1.0.0")
+
+    def test_perform_action_rejects_unknown_actions(self):
+        with self.assertRaises(ActionError):
+            perform_action("explode", {})
 
 
 if __name__ == "__main__":

@@ -3,37 +3,75 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>GitHub Watch</title>
+    <title>GitHub Store</title>
     <link rel="icon" href="data:," />
     <link rel="stylesheet" href="/assets/app.css" />
     <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js" defer></script>
   </head>
   <body>
-    <div class="app-shell">
-      <header class="topbar">
+    <div class="store-shell">
+      <aside class="sidebar" aria-label="GitHub Store navigation">
         <div class="brand">
-          <div class="brand-mark">GW</div>
+          <div class="brand-mark">GS</div>
           <div>
-            <h1>GitHub Watch</h1>
-            <p id="lastChecked">Waiting for first check</p>
+            <h1>GitHub Store</h1>
+            <p id="lastChecked">Waiting for first scan</p>
           </div>
         </div>
-        <div class="top-actions">
-          <a class="icon-button secondary" href="/api/report.md?noFetch=1" target="_blank" rel="noreferrer">
+        <nav class="nav-list">
+          <a href="#store-search" class="nav-item active">
+            <i data-lucide="search"></i>
+            <span>Store Search</span>
+          </a>
+          <a href="#installed" class="nav-item">
+            <i data-lucide="hard-drive"></i>
+            <span>Installed</span>
+          </a>
+          <a href="#scanner" class="nav-item">
+            <i data-lucide="radar"></i>
+            <span>Scanner</span>
+          </a>
+          <a href="#actions" class="nav-item">
+            <i data-lucide="wrench"></i>
+            <span>Actions</span>
+          </a>
+        </nav>
+      </aside>
+
+      <main class="workspace">
+        <header class="commandbar" id="actions">
+          <form id="githubSearchForm" class="github-search">
+            <label class="search-box">
+              <i data-lucide="git-branch"></i>
+              <input
+                id="githubSearchInput"
+                type="search"
+                placeholder="Search GitHub repositories"
+                autocomplete="off"
+              />
+            </label>
+            <button id="searchButton" class="icon-button primary" type="submit">
+              <i data-lucide="search"></i>
+              <span>Search</span>
+            </button>
+          </form>
+          <label class="root-field">
+            <span>Install root</span>
+            <input id="installRootInput" type="text" />
+          </label>
+          <a class="icon-button secondary" href="/api/report.md?noFetch=1&discover=1" target="_blank" rel="noreferrer">
             <i data-lucide="file-text"></i>
             <span>Report</span>
           </a>
-          <button id="refreshButton" class="icon-button primary" type="button">
+          <button id="refreshButton" class="icon-button secondary" type="button">
             <i data-lucide="refresh-cw"></i>
             <span>Refresh</span>
           </button>
-        </div>
-      </header>
+        </header>
 
-      <main>
         <section class="metrics" aria-label="Status summary">
           <article class="metric">
-            <span class="metric-label">Projects</span>
+            <span class="metric-label">Installed</span>
             <strong id="metricProjects">0</strong>
           </article>
           <article class="metric warning">
@@ -50,49 +88,102 @@
           </article>
         </section>
 
-        <section class="control-band" aria-label="Dashboard controls">
-          <label class="search-box">
-            <i data-lucide="search"></i>
-            <input id="searchInput" type="search" placeholder="Filter project, repo, or path" />
-          </label>
+        <section class="work-grid">
+          <section id="store-search" class="panel search-panel" aria-label="GitHub repository search">
+            <div class="panel-heading">
+              <div>
+                <h2>Store Search</h2>
+                <p>Find public and authenticated private repositories, then install them locally.</p>
+              </div>
+              <span id="searchCount" class="panel-count">0 results</span>
+            </div>
+            <div class="list-table compact">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Repository</th>
+                    <th>Signal</th>
+                    <th>Default</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody id="searchRows">
+                  <tr>
+                    <td colspan="4" class="empty-row">Search GitHub to install a project</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </section>
 
-          <div class="segmented" role="tablist" aria-label="Status filter">
-            <button class="segment active" type="button" data-filter="all">All</button>
-            <button class="segment" type="button" data-filter="behind">Behind</button>
-            <button class="segment" type="button" data-filter="release">Release/Pkg</button>
-            <button class="segment" type="button" data-filter="dirty">Dirty</button>
-            <button class="segment" type="button" data-filter="clean">Clean</button>
-          </div>
-
-          <label class="switch">
-            <input id="fastToggle" type="checkbox" checked />
-            <span>Fast</span>
-          </label>
-          <label class="switch">
-            <input id="preToggle" type="checkbox" />
-            <span>Prerelease</span>
-          </label>
+          <section id="scanner" class="panel scanner-panel" aria-label="Local scanner">
+            <div class="panel-heading">
+              <div>
+                <h2>Local Scanner</h2>
+                <p>Include projects installed as apps, skills, plugins, MCP servers, and workspaces.</p>
+              </div>
+            </div>
+            <div class="scan-controls">
+              <label class="switch">
+                <input id="scanToggle" type="checkbox" checked />
+                <span>Full local scan</span>
+              </label>
+              <label class="switch">
+                <input id="fastToggle" type="checkbox" checked />
+                <span>Fast check</span>
+              </label>
+              <label class="switch">
+                <input id="preToggle" type="checkbox" />
+                <span>Prereleases</span>
+              </label>
+            </div>
+            <div class="scan-roots">
+              <span>Scan roots</span>
+              <code id="scanRoots">Loading</code>
+            </div>
+          </section>
         </section>
 
-        <section class="table-panel" aria-label="Watched projects">
-          <table>
-            <thead>
-              <tr>
-                <th>Project</th>
-                <th>Branch</th>
-                <th>Commits</th>
-                <th>Release</th>
-                <th>State</th>
-                <th>Path</th>
-                <th></th>
-              </tr>
-            </thead>
-            <tbody id="projectRows">
-              <tr>
-                <td colspan="7" class="empty-row">Loading</td>
-              </tr>
-            </tbody>
-          </table>
+        <section id="installed" class="panel installed-panel" aria-label="Installed projects">
+          <div class="panel-heading installed-heading">
+            <div>
+              <h2>Installed Projects</h2>
+              <p>Audit local status, then update by branch commit or latest GitHub Release.</p>
+            </div>
+            <div class="installed-tools">
+              <label class="filter-box">
+                <i data-lucide="filter"></i>
+                <input id="searchInput" type="search" placeholder="Filter installed projects" />
+              </label>
+              <div class="segmented" role="tablist" aria-label="Status filter">
+                <button class="segment active" type="button" data-filter="all">All</button>
+                <button class="segment" type="button" data-filter="behind">Behind</button>
+                <button class="segment" type="button" data-filter="release">Release</button>
+                <button class="segment" type="button" data-filter="dirty">Dirty</button>
+                <button class="segment" type="button" data-filter="clean">Clean</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="list-table">
+            <table>
+              <thead>
+                <tr>
+                  <th>Project</th>
+                  <th>Local State</th>
+                  <th>Branch</th>
+                  <th>Release</th>
+                  <th>Path</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody id="projectRows">
+                <tr>
+                  <td colspan="6" class="empty-row">Loading</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
         </section>
       </main>
     </div>

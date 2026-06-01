@@ -7,15 +7,30 @@ import argparse
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote_plus
+from urllib.request import Request, urlopen
 
 
 ROOT = Path(__file__).resolve().parent
+GITHUB_REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+SKIP_SCAN_DIRS = {
+    ".git",
+    ".hg",
+    ".svn",
+    ".cache",
+    ".venv",
+    "__pycache__",
+    "node_modules",
+    "Library",
+}
+GITHUB_METADATA_CACHE: dict[str, dict[str, Any]] = {}
 
 
 def resolve_default_watchlist() -> Path:
@@ -56,6 +71,20 @@ class ProjectStatus:
     current_version: str | None = None
     latest_version: str | None = None
     source: str | None = None
+    category: str = "project"
+    default_branch: str | None = None
+    private: bool | None = None
+    stars: int | None = None
+    description: str | None = None
+    html_url: str | None = None
+    dirty_files: int = 0
+    untracked_files: int = 0
+    modified_files: int = 0
+    deleted_files: int = 0
+
+
+class ActionError(RuntimeError):
+    """Raised when a local project action is unsafe or cannot be completed."""
 
 
 def repo_slug_from_url(url: str) -> str | None:
@@ -70,6 +99,10 @@ def repo_slug_from_url(url: str) -> str | None:
         if match:
             return match.group(1)
     return None
+
+
+def is_github_repo_slug(value: str | None) -> bool:
+    return bool(value and GITHUB_REPO_RE.match(value))
 
 
 def parse_ahead_behind(output: str) -> tuple[int, int]:
@@ -156,6 +189,8 @@ def run_gh(args: list[str], timeout: int = 8) -> subprocess.CompletedProcess[str
             stdout="",
             stderr=f"timed out after {timeout}s",
         )
+    except FileNotFoundError:
+        return subprocess.CompletedProcess(command, 127, stdout="", stderr="gh not found")
 
 
 def run_npm(args: list[str], timeout: int = 8) -> subprocess.CompletedProcess[str]:
@@ -176,6 +211,8 @@ def run_npm(args: list[str], timeout: int = 8) -> subprocess.CompletedProcess[st
             stdout="",
             stderr=f"timed out after {timeout}s",
         )
+    except FileNotFoundError:
+        return subprocess.CompletedProcess(command, 127, stdout="", stderr="npm not found")
 
 
 def git_output(path: str, args: list[str]) -> str | None:
@@ -183,6 +220,94 @@ def git_output(path: str, args: list[str]) -> str | None:
     if result.returncode != 0:
         return None
     return result.stdout.strip()
+
+
+def parse_git_porcelain(output: str | None) -> dict[str, int]:
+    summary = {
+        "dirty_files": 0,
+        "untracked_files": 0,
+        "modified_files": 0,
+        "deleted_files": 0,
+    }
+    for line in (output or "").splitlines():
+        if not line:
+            continue
+        code = line[:2]
+        summary["dirty_files"] += 1
+        if code == "??":
+            summary["untracked_files"] += 1
+            continue
+        if "D" in code:
+            summary["deleted_files"] += 1
+        if any(marker in code for marker in ("M", "A", "R", "C", "U", "T")):
+            summary["modified_files"] += 1
+    return summary
+
+
+def infer_repo_from_git_remote(path: str) -> str | None:
+    remotes = git_output(path, ["remote", "-v"])
+    if not remotes:
+        return None
+    for line in remotes.splitlines():
+        parts = line.split()
+        if len(parts) < 2:
+            continue
+        slug = repo_slug_from_url(parts[1])
+        if slug:
+            return slug
+    return None
+
+
+def infer_category(path: str, project: dict[str, Any] | None = None) -> str:
+    project = project or {}
+    explicit = project.get("category") or project.get("kind")
+    if explicit:
+        return str(explicit)
+
+    type_name = str(project.get("type") or project.get("ecosystem") or "").lower()
+    text = f"{project.get('name', '')} {project.get('source', '')} {path}".lower()
+    path_obj = Path(path)
+
+    if type_name in {"npm", "npm-package"}:
+        return "mcp" if "mcp" in text else "npm"
+    if (path_obj / "SKILL.md").exists() or "/skills/" in text or text.endswith("-skill"):
+        return "skill"
+    if "/plugins/" in text or "/plugin" in text:
+        return "plugin"
+    if "mcp" in text:
+        return "mcp"
+    return "project"
+
+
+def github_repo_metadata(repo: str | None) -> dict[str, Any]:
+    if not is_github_repo_slug(repo):
+        return {}
+    assert repo is not None
+    if repo in GITHUB_METADATA_CACHE:
+        return GITHUB_METADATA_CACHE[repo]
+
+    result = run_gh(["api", f"repos/{repo}"], timeout=8)
+    if result.returncode != 0:
+        GITHUB_METADATA_CACHE[repo] = {}
+        return {}
+
+    try:
+        payload = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        GITHUB_METADATA_CACHE[repo] = {}
+        return {}
+
+    metadata = {
+        "visibility": payload.get("visibility")
+        or ("private" if payload.get("private") else "public"),
+        "private": payload.get("private"),
+        "stars": payload.get("stargazers_count"),
+        "default_branch": payload.get("default_branch"),
+        "description": payload.get("description"),
+        "html_url": payload.get("html_url"),
+    }
+    GITHUB_METADATA_CACHE[repo] = metadata
+    return metadata
 
 
 def resolve_upstream(path: str, branch: str) -> str | None:
@@ -264,14 +389,22 @@ def check_npm_package(project: dict[str, Any]) -> ProjectStatus:
         current_version=current_version,
         latest_version=latest_version,
         source=source,
+        category=infer_category(project.get("path") or source, project),
     )
 
 
 def check_project(project: dict[str, Any], no_fetch: bool, include_prereleases: bool) -> ProjectStatus:
     path = project["path"]
-    repo = project.get("repo") or ""
+    repo = project.get("repo") or infer_repo_from_git_remote(path) or ""
+    metadata = github_repo_metadata(repo)
     name = project.get("name") or repo or Path(path).name
-    visibility = project.get("visibility") or "unknown"
+    configured_visibility = project.get("visibility")
+    visibility = (
+        metadata.get("visibility")
+        if not configured_visibility or configured_visibility == "unknown"
+        else configured_visibility
+    ) or "unknown"
+    category = infer_category(path, project)
 
     if not Path(path).exists():
         return ProjectStatus(
@@ -293,6 +426,13 @@ def check_project(project: dict[str, Any], no_fetch: bool, include_prereleases: 
             release_commits_behind=None,
             fetch_status="skipped",
             error="path does not exist",
+            source=project.get("source"),
+            category=category,
+            default_branch=metadata.get("default_branch"),
+            private=metadata.get("private"),
+            stars=metadata.get("stars"),
+            description=metadata.get("description"),
+            html_url=metadata.get("html_url"),
         )
 
     fetch_status = "skipped"
@@ -312,7 +452,9 @@ def check_project(project: dict[str, Any], no_fetch: bool, include_prereleases: 
         if counts:
             ahead, behind = parse_ahead_behind(counts)
 
-    dirty = bool(git_output(path, ["status", "--porcelain"]))
+    status_output = git_output(path, ["status", "--porcelain"]) or ""
+    dirty_summary = parse_git_porcelain(status_output)
+    dirty = bool(status_output)
     branch_status = classify_branch_status(ahead, behind, dirty)
 
     current_tag = git_output(path, ["describe", "--tags", "--abbrev=0"])
@@ -338,6 +480,14 @@ def check_project(project: dict[str, Any], no_fetch: bool, include_prereleases: 
         release_status=release_status,
         release_commits_behind=release_commits_behind,
         fetch_status=fetch_status,
+        source=project.get("source"),
+        category=category,
+        default_branch=metadata.get("default_branch"),
+        private=metadata.get("private"),
+        stars=metadata.get("stars"),
+        description=metadata.get("description"),
+        html_url=metadata.get("html_url"),
+        **dirty_summary,
     )
 
 
@@ -357,6 +507,329 @@ def load_watchlist(path: Path) -> list[dict[str, Any]]:
     if not isinstance(packages, list):
         raise ValueError(f"{path} packages must be a list")
     return [*projects, *packages]
+
+
+def default_scan_roots() -> list[Path]:
+    env_value = os.environ.get("GITHUB_PROJECT_SCAN_ROOTS")
+    if env_value:
+        return [Path(item).expanduser() for item in env_value.split(os.pathsep) if item.strip()]
+
+    home = Path.home()
+    roots = [
+        home / "projects",
+        home / ".cctb",
+        home / ".codex" / "skills",
+        home / ".codex" / "plugins",
+        home / ".codex" / "vendor_imports",
+        home / ".agents" / "skills",
+        home / ".claude" / "skills",
+        home / ".claude" / "plugins",
+        home / ".hermes",
+        home / ".xhsv2",
+    ]
+    return [path for path in roots if path.exists()]
+
+
+def discover_git_repositories(
+    roots: list[Path] | None = None,
+    max_depth: int = 7,
+    limit: int = 500,
+) -> list[Path]:
+    search_roots = roots or default_scan_roots()
+    discovered: list[Path] = []
+    seen: set[Path] = set()
+
+    def walk(path: Path, depth: int) -> None:
+        if len(discovered) >= limit:
+            return
+        try:
+            resolved = path.resolve()
+        except OSError:
+            return
+        if resolved in seen:
+            return
+        seen.add(resolved)
+
+        if (path / ".git").exists():
+            discovered.append(path)
+            return
+        if depth >= max_depth:
+            return
+
+        try:
+            entries = list(os.scandir(path))
+        except OSError:
+            return
+
+        for entry in entries:
+            if entry.name in SKIP_SCAN_DIRS:
+                continue
+            try:
+                if not entry.is_dir(follow_symlinks=False):
+                    continue
+            except OSError:
+                continue
+            walk(Path(entry.path), depth + 1)
+
+    for root in search_roots:
+        if root.exists():
+            walk(root.expanduser(), 0)
+
+    return discovered
+
+
+def project_entry_from_git_path(path: Path) -> dict[str, Any]:
+    path_str = str(path)
+    repo = infer_repo_from_git_remote(path_str) or ""
+    return {
+        "name": repo.split("/")[-1] if repo else path.name,
+        "repo": repo,
+        "visibility": "unknown",
+        "path": path_str,
+        "source": "scan",
+        "category": infer_category(path_str),
+    }
+
+
+def merge_project_entries(
+    primary: list[dict[str, Any]],
+    discovered: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    merged = list(primary)
+    seen_paths = {
+        str(Path(item["path"]).expanduser())
+        for item in merged
+        if item.get("path") and not str(item.get("path")).startswith("npm:")
+    }
+    seen_repos = {item.get("repo") for item in merged if item.get("repo")}
+
+    for item in discovered:
+        path_value = str(Path(item["path"]).expanduser())
+        repo = item.get("repo")
+        if path_value in seen_paths:
+            continue
+        if repo and repo in seen_repos:
+            continue
+        merged.append(item)
+        seen_paths.add(path_value)
+        if repo:
+            seen_repos.add(repo)
+    return merged
+
+
+def load_inventory(
+    watchlist_path: Path,
+    include_discovered: bool = False,
+    scan_roots: list[Path] | None = None,
+) -> list[dict[str, Any]]:
+    entries = load_watchlist(watchlist_path)
+    if not include_discovered:
+        return entries
+    discovered = [project_entry_from_git_path(path) for path in discover_git_repositories(scan_roots)]
+    return merge_project_entries(entries, discovered)
+
+
+def normalize_github_repository(item: dict[str, Any]) -> dict[str, Any]:
+    owner = item.get("owner") or {}
+    return {
+        "name": item.get("name"),
+        "full_name": item.get("full_name"),
+        "owner": owner.get("login"),
+        "description": item.get("description"),
+        "visibility": item.get("visibility") or ("private" if item.get("private") else "public"),
+        "private": item.get("private"),
+        "stars": item.get("stargazers_count"),
+        "forks": item.get("forks_count"),
+        "default_branch": item.get("default_branch"),
+        "updated_at": item.get("updated_at"),
+        "pushed_at": item.get("pushed_at"),
+        "html_url": item.get("html_url"),
+        "clone_url": item.get("clone_url"),
+        "archived": item.get("archived"),
+    }
+
+
+def search_github_repositories(query: str, limit: int = 20) -> list[dict[str, Any]]:
+    query = query.strip()
+    if not query:
+        return []
+
+    limit = max(1, min(limit, 50))
+    endpoint = f"search/repositories?q={quote_plus(query)}&per_page={limit}"
+    result = run_gh(["api", endpoint], timeout=12)
+    payload: dict[str, Any] | None = None
+    if result.returncode == 0:
+        try:
+            payload = json.loads(result.stdout)
+        except json.JSONDecodeError:
+            payload = None
+
+    if payload is None:
+        request = Request(
+            f"https://api.github.com/search/repositories?q={quote_plus(query)}&per_page={limit}",
+            headers={
+                "Accept": "application/vnd.github+json",
+                "User-Agent": "github-project-monitor",
+            },
+        )
+        try:
+            with urlopen(request, timeout=12) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+        except Exception:
+            return []
+
+    return [normalize_github_repository(item) for item in payload.get("items", [])]
+
+
+def default_install_root() -> Path:
+    return Path(os.environ.get("GITHUB_STORE_INSTALL_ROOT", "~/projects")).expanduser()
+
+
+def ensure_git_worktree(path: str) -> Path:
+    resolved = Path(path).expanduser().resolve()
+    if not resolved.exists():
+        raise ActionError(f"path does not exist: {resolved}")
+    if resolved == Path.home().resolve() or resolved.parent == resolved:
+        raise ActionError(f"refusing unsafe path: {resolved}")
+    result = run_git(str(resolved), ["rev-parse", "--is-inside-work-tree"])
+    if result.returncode != 0:
+        raise ActionError(f"not a git worktree: {resolved}")
+    top = git_output(str(resolved), ["rev-parse", "--show-toplevel"])
+    return Path(top).resolve() if top else resolved
+
+
+def require_clean_worktree(path: Path) -> None:
+    status_output = git_output(str(path), ["status", "--porcelain"]) or ""
+    if status_output:
+        summary = parse_git_porcelain(status_output)
+        raise ActionError(
+            "worktree is dirty: "
+            f"{summary['dirty_files']} changed, {summary['untracked_files']} untracked"
+        )
+
+
+def install_repository(repo: str, install_root: str | None = None) -> dict[str, Any]:
+    if not is_github_repo_slug(repo):
+        raise ActionError(f"invalid GitHub repo: {repo}")
+
+    root = Path(install_root).expanduser() if install_root else default_install_root()
+    root.mkdir(parents=True, exist_ok=True)
+    destination = root / repo.split("/")[-1]
+    if destination.exists():
+        raise ActionError(f"destination already exists: {destination}")
+
+    if shutil.which("gh"):
+        result = run_gh(["repo", "clone", repo, str(destination)], timeout=180)
+    else:
+        result = subprocess.run(
+            ["git", "clone", f"https://github.com/{repo}.git", str(destination)],
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=180,
+        )
+
+    if result.returncode != 0:
+        raise ActionError((result.stderr or result.stdout or "clone failed").strip())
+
+    return {
+        "ok": True,
+        "action": "install",
+        "repo": repo,
+        "path": str(destination),
+        "message": f"installed {repo} to {destination}",
+    }
+
+
+def update_project_to_commit(path: str) -> dict[str, Any]:
+    worktree = ensure_git_worktree(path)
+    require_clean_worktree(worktree)
+
+    fetch = run_git(str(worktree), ["fetch", "--all", "--tags", "--prune"])
+    if fetch.returncode != 0:
+        raise ActionError((fetch.stderr or fetch.stdout or "git fetch failed").strip())
+
+    pull = run_git(str(worktree), ["pull", "--ff-only"])
+    if pull.returncode != 0:
+        raise ActionError((pull.stderr or pull.stdout or "git pull --ff-only failed").strip())
+
+    return {
+        "ok": True,
+        "action": "updateCommit",
+        "path": str(worktree),
+        "message": pull.stdout.strip() or f"updated {worktree}",
+    }
+
+
+def update_project_to_release(
+    path: str,
+    repo: str | None = None,
+    include_prereleases: bool = False,
+) -> dict[str, Any]:
+    worktree = ensure_git_worktree(path)
+    require_clean_worktree(worktree)
+
+    inferred_repo = repo or infer_repo_from_git_remote(str(worktree))
+    if not is_github_repo_slug(inferred_repo):
+        raise ActionError(f"cannot infer GitHub repo for {worktree}")
+
+    fetch = run_git(str(worktree), ["fetch", "--all", "--tags", "--prune"])
+    if fetch.returncode != 0:
+        raise ActionError((fetch.stderr or fetch.stdout or "git fetch failed").strip())
+
+    latest_tag, _published_at = latest_release(str(inferred_repo), include_prereleases)
+    if not latest_tag:
+        raise ActionError(f"no GitHub release found for {inferred_repo}")
+
+    checkout = run_git(str(worktree), ["checkout", "--detach", latest_tag])
+    if checkout.returncode != 0:
+        raise ActionError((checkout.stderr or checkout.stdout or "git checkout failed").strip())
+
+    return {
+        "ok": True,
+        "action": "updateRelease",
+        "repo": inferred_repo,
+        "path": str(worktree),
+        "tag": latest_tag,
+        "message": f"checked out {inferred_repo} at {latest_tag}",
+    }
+
+
+def trash_project(path: str, allow_dirty: bool = False) -> dict[str, Any]:
+    worktree = ensure_git_worktree(path)
+    if not allow_dirty:
+        require_clean_worktree(worktree)
+
+    trash_root = Path.home() / ".local" / "share" / "github-project-monitor" / "trash"
+    trash_root.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    destination = trash_root / f"{worktree.name}-{stamp}"
+    shutil.move(str(worktree), str(destination))
+
+    return {
+        "ok": True,
+        "action": "uninstall",
+        "path": str(worktree),
+        "trashedTo": str(destination),
+        "message": f"moved {worktree} to {destination}",
+    }
+
+
+def perform_action(action: str, payload: dict[str, Any]) -> dict[str, Any]:
+    if action == "install":
+        return install_repository(str(payload.get("repo") or ""), payload.get("installRoot"))
+    if action == "updateCommit":
+        return update_project_to_commit(str(payload.get("path") or ""))
+    if action == "updateRelease":
+        return update_project_to_release(
+            str(payload.get("path") or ""),
+            payload.get("repo"),
+            bool(payload.get("includePrereleases")),
+        )
+    if action == "uninstall":
+        return trash_project(str(payload.get("path") or ""), bool(payload.get("allowDirty")))
+    raise ActionError(f"unknown action: {action}")
 
 
 def render_markdown(statuses: list[ProjectStatus]) -> str:

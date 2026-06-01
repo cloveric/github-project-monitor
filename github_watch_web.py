@@ -12,11 +12,17 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 from github_watch import (
+    ActionError,
     DEFAULT_WATCHLIST,
     ProjectStatus,
     check_entry,
+    default_install_root,
+    default_scan_roots,
+    load_inventory,
     load_watchlist,
+    perform_action,
     render_markdown,
+    search_github_repositories,
 )
 
 
@@ -69,8 +75,17 @@ def check_watchlist(
     no_fetch: bool,
     include_prereleases: bool,
     only: str | None,
+    include_discovered: bool = False,
+    scan_roots: list[Path] | None = None,
 ) -> list[ProjectStatus]:
-    projects = filter_projects(load_watchlist(watchlist_path), only)
+    projects = filter_projects(
+        load_inventory(
+            watchlist_path,
+            include_discovered=include_discovered,
+            scan_roots=scan_roots,
+        ),
+        only,
+    )
     if not projects:
         return []
     workers = min(8, len(projects))
@@ -92,6 +107,32 @@ def bool_query(params: dict[str, list[str]], name: str) -> bool:
     return value in {"1", "true", "yes", "on"}
 
 
+def int_query(params: dict[str, list[str]], name: str, default: int) -> int:
+    value = params.get(name, [str(default)])[0]
+    try:
+        return int(value)
+    except ValueError:
+        return default
+
+
+def roots_query(params: dict[str, list[str]]) -> list[Path] | None:
+    raw_values = params.get("roots")
+    extra_values = params.get("extraRoot") or params.get("extraRoots")
+    if not raw_values and not extra_values:
+        return None
+
+    roots: list[Path] = []
+    if extra_values:
+        roots.extend(default_scan_roots())
+
+    for raw_value in raw_values or extra_values or []:
+        for item in raw_value.split("|"):
+            item = item.strip()
+            if item:
+                roots.append(Path(item).expanduser())
+    return roots or None
+
+
 def make_handler(watchlist_path: Path):
     class GitHubWatchHandler(BaseHTTPRequestHandler):
         server_version = "GitHubWatch/1.0"
@@ -101,8 +142,24 @@ def make_handler(watchlist_path: Path):
 
         def do_GET(self) -> None:
             parsed = urlparse(self.path)
+            params = parse_qs(parsed.query)
+            if parsed.path == "/api/config":
+                self.send_json(
+                    {
+                        "installRoot": str(default_install_root()),
+                        "scanRoots": [str(path) for path in default_scan_roots()],
+                    }
+                )
+                return
             if parsed.path == "/api/projects":
                 self.send_json({"projects": load_watchlist(watchlist_path)})
+                return
+            if parsed.path == "/api/search":
+                query = params.get("q", [""])[0]
+                limit = int_query(params, "limit", 20)
+                self.send_json(
+                    {"query": query, "results": search_github_repositories(query, limit)}
+                )
                 return
             if parsed.path == "/api/check":
                 self.handle_check(parsed.query)
@@ -112,6 +169,33 @@ def make_handler(watchlist_path: Path):
                 return
             self.serve_static(parsed.path)
 
+        def do_POST(self) -> None:
+            parsed = urlparse(self.path)
+            if parsed.path != "/api/action":
+                self.send_error(404)
+                return
+
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+            except ValueError:
+                length = 0
+            try:
+                payload = json.loads(self.rfile.read(length).decode("utf-8") or "{}")
+            except json.JSONDecodeError:
+                self.send_json({"ok": False, "error": "invalid JSON"}, status=400)
+                return
+
+            action = str(payload.get("action") or "")
+            try:
+                result = perform_action(action, payload)
+            except ActionError as error:
+                self.send_json({"ok": False, "error": str(error)}, status=409)
+                return
+            except Exception as error:
+                self.send_json({"ok": False, "error": str(error)}, status=500)
+                return
+            self.send_json(result)
+
         def handle_check(self, query: str) -> None:
             params = parse_qs(query)
             statuses = check_watchlist(
@@ -119,6 +203,8 @@ def make_handler(watchlist_path: Path):
                 no_fetch=bool_query(params, "noFetch"),
                 include_prereleases=bool_query(params, "includePrereleases"),
                 only=params.get("only", [None])[0],
+                include_discovered=bool_query(params, "discover"),
+                scan_roots=roots_query(params),
             )
             self.send_json(build_api_payload(statuses))
 
@@ -129,6 +215,8 @@ def make_handler(watchlist_path: Path):
                 no_fetch=bool_query(params, "noFetch"),
                 include_prereleases=bool_query(params, "includePrereleases"),
                 only=params.get("only", [None])[0],
+                include_discovered=bool_query(params, "discover"),
+                scan_roots=roots_query(params),
             )
             body = render_markdown(statuses).encode("utf-8")
             self.send_response(200)
@@ -158,9 +246,9 @@ def make_handler(watchlist_path: Path):
             self.end_headers()
             self.wfile.write(body)
 
-        def send_json(self, payload: dict[str, Any]) -> None:
+        def send_json(self, payload: dict[str, Any], status: int = 200) -> None:
             body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-            self.send_response(200)
+            self.send_response(status)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()

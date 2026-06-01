@@ -1,7 +1,9 @@
 import unittest
+from pathlib import Path
+from unittest.mock import patch
 
 from github_watch import ProjectStatus
-from github_watch_web import build_api_payload, filter_projects
+from github_watch_web import build_api_payload, filter_projects, roots_query
 
 
 class GitHubWatchWebTests(unittest.TestCase):
@@ -64,6 +66,12 @@ class GitHubWatchWebTests(unittest.TestCase):
         self.assertEqual(filter_projects(projects, "heygen")[0]["name"], "hyperframes")
         self.assertEqual(filter_projects(projects, "design")[0]["name"], "open-design")
         self.assertEqual(filter_projects(projects, "/a/")[0]["name"], "hyperframes")
+
+    def test_roots_query_keeps_default_scan_roots_for_extra_install_root(self):
+        with patch("github_watch_web.default_scan_roots", return_value=[Path("/default")]):
+            roots = roots_query({"extraRoot": ["/tmp/custom"]})
+
+        self.assertEqual(roots, [Path("/default"), Path("/tmp/custom")])
 
 
 if __name__ == "__main__":
