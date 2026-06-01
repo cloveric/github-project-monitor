@@ -55,9 +55,16 @@ function visibilityClass(value) {
   return value === "private" ? "private" : "public";
 }
 
+function isReleaseCheckout(project) {
+  return project.kind !== "npm" && !project.upstream && project.current_tag;
+}
+
 function branchLine(project) {
   if (project.kind === "npm") {
     return `${escapeHtml(project.source || "npm")} <span class="meta-text">${escapeHtml(project.package)}</span>`;
+  }
+  if (isReleaseCheckout(project)) {
+    return `${escapeHtml(project.current_tag)} <span class="meta-text">detached release checkout</span>`;
   }
   const upstream = project.upstream || "no upstream";
   return `${escapeHtml(project.branch)} <span class="meta-text">${escapeHtml(upstream)}</span>`;
@@ -65,17 +72,40 @@ function branchLine(project) {
 
 function commitLine(project) {
   if (project.kind === "npm") {
-    return `<strong>${escapeHtml(project.configured_version || "latest")}</strong> configured`;
+      return `<strong>${escapeHtml(project.configured_version || "latest")}</strong> configured`;
+  }
+  if (isReleaseCheckout(project)) {
+    return `<strong>Release checkout</strong> <span class="meta-text">not tracking a branch</span>`;
+  }
+  if (project.ahead == null || project.behind == null) {
+    return `<strong>No upstream comparison</strong> <span class="meta-text">counts unavailable</span>`;
   }
   const ahead = project.ahead ?? "NA";
   const behind = project.behind ?? "NA";
   return `<strong>${ahead}</strong> ahead <span class="meta-text"><strong>${behind}</strong> behind</span>`;
 }
 
+function formatDateTime(value) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toLocaleString(undefined, {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
 function releaseLine(project) {
   const current = project.current_tag || "NA";
   const latest = project.latest_release || "NA";
-  return `${escapeHtml(current)} <span class="meta-text">latest ${escapeHtml(latest)}</span>`;
+  const published = formatDateTime(project.latest_release_published_at);
+  const publishedLine = published
+    ? `<span class="meta-text">published ${escapeHtml(published)}</span>`
+    : "";
+  return `${escapeHtml(current)} <span class="meta-text">latest ${escapeHtml(latest)}</span>${publishedLine}`;
 }
 
 function localSignal(project) {

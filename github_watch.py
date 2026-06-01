@@ -437,7 +437,7 @@ def check_project(project: dict[str, Any], no_fetch: bool, include_prereleases: 
 
     fetch_status = "skipped"
     if not no_fetch:
-        fetch = run_git(path, ["fetch", "--all", "--tags", "--prune"])
+        fetch = run_git(path, ["fetch", "--all", "--prune", "--no-tags"])
         fetch_status = "ok" if fetch.returncode == 0 else f"fail:{fetch.returncode}"
 
     branch = git_output(path, ["symbolic-ref", "--short", "HEAD"])
