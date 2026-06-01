@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>GitHub Watch</title>
+    <link rel="icon" href="data:," />
+    <link rel="stylesheet" href="/assets/app.css" />
+    <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js" defer></script>
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar">
+        <div class="brand">
+          <div class="brand-mark">GW</div>
+          <div>
+            <h1>GitHub Watch</h1>
+            <p id="lastChecked">Waiting for first check</p>
+          </div>
+        </div>
+        <div class="top-actions">
+          <a class="icon-button secondary" href="/api/report.md?noFetch=1" target="_blank" rel="noreferrer">
+            <i data-lucide="file-text"></i>
+            <span>Report</span>
+          </a>
+          <button id="refreshButton" class="icon-button primary" type="button">
+            <i data-lucide="refresh-cw"></i>
+            <span>Refresh</span>
+          </button>
+        </div>
+      </header>
+
+      <main>
+        <section class="metrics" aria-label="Status summary">
+          <article class="metric">
+            <span class="metric-label">Projects</span>
+            <strong id="metricProjects">0</strong>
+          </article>
+          <article class="metric warning">
+            <span class="metric-label">Branch Behind</span>
+            <strong id="metricBranch">0</strong>
+          </article>
+          <article class="metric danger">
+            <span class="metric-label">Release/Package</span>
+            <strong id="metricRelease">0</strong>
+          </article>
+          <article class="metric dirty">
+            <span class="metric-label">Dirty</span>
+            <strong id="metricDirty">0</strong>
+          </article>
+        </section>
+
+        <section class="control-band" aria-label="Dashboard controls">
+          <label class="search-box">
+            <i data-lucide="search"></i>
+            <input id="searchInput" type="search" placeholder="Filter project, repo, or path" />
+          </label>
+
+          <div class="segmented" role="tablist" aria-label="Status filter">
+            <button class="segment active" type="button" data-filter="all">All</button>
+            <button class="segment" type="button" data-filter="behind">Behind</button>
+            <button class="segment" type="button" data-filter="release">Release/Pkg</button>
+            <button class="segment" type="button" data-filter="dirty">Dirty</button>
+            <button class="segment" type="button" data-filter="clean">Clean</button>
+          </div>
+
+          <label class="switch">
+            <input id="fastToggle" type="checkbox" checked />
+            <span>Fast</span>
+          </label>
+          <label class="switch">
+            <input id="preToggle" type="checkbox" />
+            <span>Prerelease</span>
+          </label>
+        </section>
+
+        <section class="table-panel" aria-label="Watched projects">
+          <table>
+            <thead>
+              <tr>
+                <th>Project</th>
+                <th>Branch</th>
+                <th>Commits</th>
+                <th>Release</th>
+                <th>State</th>
+                <th>Path</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody id="projectRows">
+              <tr>
+                <td colspan="7" class="empty-row">Loading</td>
+              </tr>
+            </tbody>
+          </table>
+        </section>
+      </main>
+    </div>
+
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+    <script src="/assets/app.js"></script>
+  </body>
+</html>

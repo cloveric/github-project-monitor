@@ -1,0 +1,14 @@
+.DS_Store
+__pycache__/
+*.py[cod]
+
+# Personal machine state
+watchlist.local.json
+reports/
+output/
+.playwright-cli/
+
+# Local environment
+.env
+.venv/
+venv/

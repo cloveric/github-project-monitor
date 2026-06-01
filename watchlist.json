@@ -1,0 +1,31 @@
+{
+  "version": 1,
+  "projects": [
+    {
+      "name": "example-project",
+      "repo": "octocat/Hello-World",
+      "visibility": "public",
+      "path": "/absolute/path/to/local/clone"
+    }
+  ],
+  "packages": [
+    {
+      "type": "npm",
+      "name": "playwright-mcp",
+      "package": "@playwright/mcp",
+      "visibility": "public",
+      "configuredVersion": "latest",
+      "source": "Claude mcpServers.playwright",
+      "path": "npm:@playwright/mcp@latest"
+    },
+    {
+      "type": "npm",
+      "name": "chrome-devtools-mcp",
+      "package": "chrome-devtools-mcp",
+      "visibility": "public",
+      "configuredVersion": "latest",
+      "source": "Claude mcpServers.chrome-devtools",
+      "path": "npm:chrome-devtools-mcp@latest"
+    }
+  ]
+}
