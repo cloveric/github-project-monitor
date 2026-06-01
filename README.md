@@ -31,6 +31,8 @@ GitHub Project Monitor gives you one local dashboard to answer:
 
 - **GitHub Store Web GUI** - search GitHub repositories, install them locally,
   inspect installed projects, and run safe actions from one dashboard.
+- **Agent-assisted installs** - choose Codex by default, Claude Code, or a plain
+  Git-only clone when installing a repository.
 - **Comprehensive local scan** - discovers Git worktrees across common project,
   skill, plugin, MCP, agent, and workspace roots.
 - **Installed project audit** - reports branch, upstream, ahead/behind counts,
@@ -65,7 +67,7 @@ http://127.0.0.1:8765
 The dashboard includes:
 
 - **Store Search** - authenticated GitHub search through `gh api`, with a public
-  GitHub API fallback.
+  GitHub API fallback, then install with Codex, Claude Code, or Git only.
 - **Installed Projects** - filter by all, behind, release, dirty, or clean.
 - **Local Scanner** - include local projects installed as apps, skills, plugins,
   MCP servers, and workspaces.
@@ -77,10 +79,16 @@ The dashboard includes:
 The tool is intentionally local-first and conservative.
 
 - Dirty Git worktrees are not updated or moved to trash by default.
-- Branch updates run `git fetch --all --tags --prune`, then
+- Branch updates run `git fetch --all --prune --no-tags`, then
   `git pull --ff-only`.
-- Release updates fetch tags, resolve the latest GitHub Release, then check out
-  that tag in detached HEAD mode.
+- Release updates resolve the latest GitHub Release, fetch only that tag, then
+  check out the tag in detached HEAD mode.
+- Agent-assisted installs run the selected local CLI inside the cloned project
+  and write logs under:
+
+```text
+~/.local/share/github-project-monitor/install-logs/
+```
 - Uninstall moves the worktree to:
 
 ```text

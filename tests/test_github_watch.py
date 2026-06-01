@@ -6,12 +6,15 @@ import subprocess
 
 from github_watch import (
     ActionError,
+    build_install_agent_command,
     classify_package_version,
     classify_branch_status,
     classify_release_status,
     infer_category,
+    install_repository,
     is_github_repo_slug,
     merge_project_entries,
+    normalize_install_agent,
     normalize_github_repository,
     parse_git_porcelain,
     parse_ahead_behind,
@@ -216,6 +219,96 @@ class GitHubWatchTests(unittest.TestCase):
         self.assertEqual(normalized["full_name"], "openai/skills")
         self.assertEqual(normalized["visibility"], "public")
         self.assertEqual(normalized["stars"], 42)
+
+    def test_normalize_install_agent_defaults_to_codex_and_accepts_claude(self):
+        self.assertEqual(normalize_install_agent(None), "codex")
+        self.assertEqual(normalize_install_agent(""), "codex")
+        self.assertEqual(normalize_install_agent("claude"), "claude")
+        self.assertEqual(normalize_install_agent("git"), "direct")
+
+        with self.assertRaises(ActionError):
+            normalize_install_agent("unknown")
+
+    def test_build_install_agent_command_covers_codex_and_claude(self):
+        destination = Path("/tmp/example")
+
+        codex_command, codex_cwd = build_install_agent_command(
+            "codex", "owner/example", destination, Path("/tmp/summary.txt")
+        )
+        self.assertEqual(codex_cwd, destination)
+        self.assertEqual(codex_command[:2], ["codex", "exec"])
+        self.assertIn("--dangerously-bypass-approvals-and-sandbox", codex_command)
+        self.assertIn("owner/example", codex_command[-1])
+
+        claude_command, claude_cwd = build_install_agent_command(
+            "claude", "owner/example", destination, Path("/tmp/summary.txt")
+        )
+        self.assertEqual(claude_cwd, destination)
+        self.assertEqual(claude_command[:2], ["claude", "-p"])
+        self.assertIn("bypassPermissions", claude_command)
+        self.assertIn("owner/example", claude_command[-1])
+
+    def test_install_repository_runs_codex_agent_by_default_after_clone(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            destination = root / "example"
+
+            def fake_clone(args, timeout=8):
+                destination.mkdir()
+                return subprocess.CompletedProcess(["gh", *args], 0, stdout="", stderr="")
+
+            with (
+                patch("github_watch.shutil.which", return_value="/usr/bin/gh"),
+                patch("github_watch.run_gh", side_effect=fake_clone),
+                patch(
+                    "github_watch.run_install_agent",
+                    return_value={
+                        "agent": "codex",
+                        "summary": "dependencies installed",
+                        "log": "/tmp/install.log",
+                    },
+                ) as run_agent,
+            ):
+                result = install_repository("owner/example", str(root))
+
+            self.assertEqual(result["installerAgent"], "codex")
+            self.assertEqual(result["agentSummary"], "dependencies installed")
+            run_agent.assert_called_once_with("codex", "owner/example", destination)
+
+    def test_install_repository_allows_claude_and_direct_installers(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            clone_count = 0
+
+            def fake_clone(args, timeout=8):
+                nonlocal clone_count
+                clone_count += 1
+                Path(args[-1]).mkdir()
+                return subprocess.CompletedProcess(["gh", *args], 0, stdout="", stderr="")
+
+            with (
+                patch("github_watch.shutil.which", return_value="/usr/bin/gh"),
+                patch("github_watch.run_gh", side_effect=fake_clone),
+                patch(
+                    "github_watch.run_install_agent",
+                    return_value={"agent": "claude", "summary": "ready", "log": "/tmp/log"},
+                ) as run_agent,
+            ):
+                claude_result = install_repository("owner/claude-demo", str(root), "claude")
+
+            self.assertEqual(claude_result["installerAgent"], "claude")
+            run_agent.assert_called_once()
+
+            with (
+                patch("github_watch.shutil.which", return_value="/usr/bin/gh"),
+                patch("github_watch.run_gh", side_effect=fake_clone),
+                patch("github_watch.run_install_agent") as run_agent,
+            ):
+                direct_result = install_repository("owner/direct-demo", str(root), "direct")
+
+            self.assertEqual(direct_result["installerAgent"], "direct")
+            run_agent.assert_not_called()
+            self.assertEqual(clone_count, 2)
 
     def test_trash_project_moves_clean_git_worktree_to_local_trash(self):
         with TemporaryDirectory() as tmpdir:

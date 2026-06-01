@@ -15,6 +15,7 @@ const githubSearchForm = document.querySelector("#githubSearchForm");
 const githubSearchInput = document.querySelector("#githubSearchInput");
 const searchButton = document.querySelector("#searchButton");
 const installRootInput = document.querySelector("#installRootInput");
+const installerAgentSelect = document.querySelector("#installerAgentSelect");
 const scanToggle = document.querySelector("#scanToggle");
 const fastToggle = document.querySelector("#fastToggle");
 const preToggle = document.querySelector("#preToggle");
@@ -285,6 +286,12 @@ async function loadConfig() {
   if (!response.ok) return;
   const config = await response.json();
   installRootInput.value = config.installRoot || "";
+  if (Array.isArray(config.installAgents) && config.installAgents.length) {
+    installerAgentSelect.innerHTML = config.installAgents
+      .map((agent) => `<option value="${escapeHtml(agent.id)}">${escapeHtml(agent.label)}</option>`)
+      .join("");
+  }
+  installerAgentSelect.value = config.defaultInstallerAgent || "codex";
   document.querySelector("#scanRoots").textContent = (config.scanRoots || []).join(" · ");
 }
 
@@ -432,6 +439,7 @@ searchRows.addEventListener("click", async (event) => {
       action: "install",
       repo,
       installRoot: installRootInput.value.trim(),
+      installerAgent: installerAgentSelect.value,
     });
     await refresh();
   } catch (error) {

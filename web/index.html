@@ -59,6 +59,14 @@
             <span>Install root</span>
             <input id="installRootInput" type="text" />
           </label>
+          <label class="root-field agent-field">
+            <span>Installer</span>
+            <select id="installerAgentSelect">
+              <option value="codex">Codex</option>
+              <option value="claude">Claude Code</option>
+              <option value="direct">Git only</option>
+            </select>
+          </label>
           <a class="icon-button secondary" href="/api/report.md?noFetch=1&discover=1" target="_blank" rel="noreferrer">
             <i data-lucide="file-text"></i>
             <span>Report</span>

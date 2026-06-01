@@ -14,6 +14,7 @@ from urllib.parse import parse_qs, urlparse
 from github_watch import (
     ActionError,
     DEFAULT_WATCHLIST,
+    INSTALL_AGENTS,
     ProjectStatus,
     check_entry,
     default_install_root,
@@ -147,6 +148,11 @@ def make_handler(watchlist_path: Path):
                 self.send_json(
                     {
                         "installRoot": str(default_install_root()),
+                        "defaultInstallerAgent": "codex",
+                        "installAgents": [
+                            {"id": key, "label": label}
+                            for key, label in INSTALL_AGENTS.items()
+                        ],
                         "scanRoots": [str(path) for path in default_scan_roots()],
                     }
                 )

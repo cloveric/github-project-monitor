@@ -20,6 +20,11 @@ from urllib.request import Request, urlopen
 
 ROOT = Path(__file__).resolve().parent
 GITHUB_REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+INSTALL_AGENTS = {
+    "codex": "Codex",
+    "claude": "Claude Code",
+    "direct": "Git only",
+}
 SKIP_SCAN_DIRS = {
     ".git",
     ".hg",
@@ -685,6 +690,145 @@ def default_install_root() -> Path:
     return Path(os.environ.get("GITHUB_STORE_INSTALL_ROOT", "~/projects")).expanduser()
 
 
+def normalize_install_agent(value: str | None) -> str:
+    agent = (value or "codex").strip().lower()
+    if not agent:
+        agent = "codex"
+    if agent in {"git", "none", "manual"}:
+        agent = "direct"
+    if agent not in INSTALL_AGENTS:
+        raise ActionError(f"unsupported installer agent: {value}")
+    return agent
+
+
+def installer_prompt(repo: str, destination: Path) -> str:
+    return (
+        "You are helping a non-technical user install a GitHub project locally.\n"
+        f"Repository: {repo}\n"
+        f"Local path: {destination}\n\n"
+        "Inspect the project, read its README/package files, install the normal dependencies, "
+        "and run the lightest useful verification command if one is obvious. Keep changes inside "
+        "this project directory. Do not publish, deploy, delete user files, or make unrelated "
+        "changes. Finish with a short summary of what you installed, how to run it, and any "
+        "remaining issue."
+    )
+
+
+def build_install_agent_command(
+    agent: str,
+    repo: str,
+    destination: Path,
+    summary_path: Path,
+) -> tuple[list[str], Path]:
+    prompt = installer_prompt(repo, destination)
+    if agent == "codex":
+        return (
+            [
+                "codex",
+                "exec",
+                "--cd",
+                str(destination),
+                "--skip-git-repo-check",
+                "--dangerously-bypass-approvals-and-sandbox",
+                "-o",
+                str(summary_path),
+                prompt,
+            ],
+            destination,
+        )
+    if agent == "claude":
+        return (
+            [
+                "claude",
+                "-p",
+                "--permission-mode",
+                "bypassPermissions",
+                "--output-format",
+                "text",
+                "--add-dir",
+                str(destination),
+                prompt,
+            ],
+            destination,
+        )
+    raise ActionError(f"unsupported installer agent: {agent}")
+
+
+def install_log_dir() -> Path:
+    root = Path.home() / ".local" / "share" / "github-project-monitor" / "install-logs"
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
+def text_tail(value: str, limit: int = 4000) -> str:
+    value = value.strip()
+    return value if len(value) <= limit else value[-limit:]
+
+
+def run_install_agent(agent: str, repo: str, destination: Path) -> dict[str, str]:
+    agent = normalize_install_agent(agent)
+    if agent == "direct":
+        return {"agent": agent, "summary": "cloned without an installer agent", "log": ""}
+    if not shutil.which(agent):
+        raise ActionError(f"{INSTALL_AGENTS[agent]} CLI not found")
+
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    safe_repo = repo.replace("/", "__")
+    log_path = install_log_dir() / f"{stamp}-{safe_repo}-{agent}.log"
+    summary_path = install_log_dir() / f"{stamp}-{safe_repo}-{agent}-summary.txt"
+    command, cwd = build_install_agent_command(agent, repo, destination, summary_path)
+    env = os.environ.copy()
+    env.setdefault("NO_COLOR", "1")
+    env.setdefault("TERM", "dumb")
+
+    try:
+        result = subprocess.run(
+            command,
+            cwd=cwd,
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=env,
+            timeout=900,
+        )
+    except subprocess.TimeoutExpired as error:
+        raise ActionError(f"{INSTALL_AGENTS[agent]} installer timed out after 900s") from error
+    except FileNotFoundError as error:
+        raise ActionError(f"{INSTALL_AGENTS[agent]} CLI not found") from error
+
+    log_path.write_text(
+        "\n".join(
+            [
+                f"$ {' '.join(command[:-1])} <prompt>",
+                "",
+                "## stdout",
+                result.stdout,
+                "",
+                "## stderr",
+                result.stderr,
+            ]
+        ),
+        encoding="utf-8",
+    )
+    summary = ""
+    if summary_path.exists():
+        summary = summary_path.read_text(encoding="utf-8", errors="replace").strip()
+    summary = summary or result.stdout.strip() or result.stderr.strip()
+
+    if result.returncode != 0:
+        raise ActionError(
+            f"{INSTALL_AGENTS[agent]} installer failed after cloning to {destination}: "
+            f"{text_tail(summary or 'no output')}. Log: {log_path}"
+        )
+
+    return {
+        "agent": agent,
+        "summary": text_tail(summary),
+        "log": str(log_path),
+    }
+
+
 def ensure_git_worktree(path: str) -> Path:
     resolved = Path(path).expanduser().resolve()
     if not resolved.exists():
@@ -734,9 +878,14 @@ def require_clean_worktree(path: Path) -> None:
         )
 
 
-def install_repository(repo: str, install_root: str | None = None) -> dict[str, Any]:
+def install_repository(
+    repo: str,
+    install_root: str | None = None,
+    installer_agent: str | None = None,
+) -> dict[str, Any]:
     if not is_github_repo_slug(repo):
         raise ActionError(f"invalid GitHub repo: {repo}")
+    agent = normalize_install_agent(installer_agent)
 
     root = Path(install_root).expanduser() if install_root else default_install_root()
     root.mkdir(parents=True, exist_ok=True)
@@ -759,12 +908,27 @@ def install_repository(repo: str, install_root: str | None = None) -> dict[str, 
     if result.returncode != 0:
         raise ActionError((result.stderr or result.stdout or "clone failed").strip())
 
+    agent_result = run_install_agent(agent, repo, destination) if agent != "direct" else {
+        "agent": "direct",
+        "summary": "cloned without an installer agent",
+        "log": "",
+    }
+    summary = agent_result.get("summary") or ""
+    message = (
+        f"installed {repo} to {destination} with {INSTALL_AGENTS[agent]}"
+        if agent != "direct"
+        else f"installed {repo} to {destination}"
+    )
+
     return {
         "ok": True,
         "action": "install",
         "repo": repo,
         "path": str(destination),
-        "message": f"installed {repo} to {destination}",
+        "installerAgent": agent_result["agent"],
+        "agentSummary": summary,
+        "agentLog": agent_result.get("log") or "",
+        "message": message,
     }
 
 
@@ -840,7 +1004,11 @@ def trash_project(path: str, allow_dirty: bool = False) -> dict[str, Any]:
 
 def perform_action(action: str, payload: dict[str, Any]) -> dict[str, Any]:
     if action == "install":
-        return install_repository(str(payload.get("repo") or ""), payload.get("installRoot"))
+        return install_repository(
+            str(payload.get("repo") or ""),
+            payload.get("installRoot"),
+            payload.get("installerAgent"),
+        )
     if action == "updateCommit":
         return update_project_to_commit(str(payload.get("path") or ""))
     if action == "updateRelease":

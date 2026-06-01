@@ -40,7 +40,8 @@ body {
 }
 
 button,
-input {
+input,
+select {
   font: inherit;
 }
 
@@ -154,7 +155,7 @@ h1 {
 
 .commandbar {
   display: grid;
-  grid-template-columns: minmax(340px, 1fr) minmax(240px, 340px) auto auto;
+  grid-template-columns: minmax(300px, 1fr) minmax(220px, 320px) minmax(150px, 190px) auto auto;
   align-items: center;
   gap: 10px;
   margin-bottom: 14px;
@@ -194,13 +195,19 @@ h1 {
 
 .search-box input,
 .filter-box input,
-.root-field input {
+.root-field input,
+.root-field select {
   width: 100%;
   min-width: 0;
   border: 0;
   outline: 0;
   background: transparent;
   color: var(--text);
+}
+
+.root-field select {
+  appearance: none;
+  cursor: pointer;
 }
 
 .root-field {
@@ -697,6 +704,10 @@ tr:last-child td {
 
   .github-search {
     grid-column: span 2;
+  }
+
+  .agent-field {
+    min-width: 0;
   }
 }
 

@@ -27,6 +27,7 @@ GitHub Project Monitor 用一个本地 dashboard 回答这些问题：
 ## 亮点
 
 - **GitHub Store Web GUI** - 在一个 dashboard 里搜索 GitHub repo、安装到本地、查看已安装项目，并执行安全操作。
+- **Agent 辅助安装** - 安装 repo 时默认用 Codex，也可以选择 Claude Code 或纯 Git clone。
 - **全面本地扫描** - 扫描常见的 project、skill、plugin、MCP、agent、workspace 根目录。
 - **已安装项目审计** - 展示 branch、upstream、ahead/behind、dirty files、untracked files、visibility、category、release status 和本地路径。
 - **两种更新方式** - 可以按 branch commit 执行 `git pull --ff-only`，也可以按最新 GitHub Release tag 更新。
@@ -51,7 +52,7 @@ http://127.0.0.1:8765
 
 Dashboard 包含：
 
-- **Store Search** - 优先通过已登录的 `gh api` 搜索 GitHub，失败时回退到 public GitHub API。
+- **Store Search** - 优先通过已登录的 `gh api` 搜索 GitHub，失败时回退到 public GitHub API，然后可用 Codex、Claude Code 或纯 Git 安装。
 - **Installed Projects** - 按 all、behind、release、dirty、clean 过滤本地项目。
 - **Local Scanner** - 扫描作为 app、skill、plugin、MCP server、workspace 安装的项目。
 - **Actions** - 安装、按 commit 更新、按 release 更新、复制路径、移入 trash。
@@ -61,12 +62,18 @@ Dashboard 包含：
 这个工具是本地优先且保守的。
 
 - 默认不会更新或移除 dirty Git worktree。
-- 分支更新执行 `git fetch --all --tags --prune`，然后执行 `git pull --ff-only`。
-- Release 更新会 fetch tags，读取最新 GitHub Release，然后以 detached HEAD 方式 checkout 到该 tag。
+- 分支更新执行 `git fetch --all --prune --no-tags`，然后执行 `git pull --ff-only`。
+- Release 更新会读取最新 GitHub Release，只 fetch 目标 tag，然后以 detached HEAD 方式 checkout 到该 tag。
 - 卸载会把 worktree 移入：
 
 ```text
 ~/.local/share/github-project-monitor/trash/
+```
+
+Agent 辅助安装会在 clone 后调用选中的本地 CLI，并把日志写入：
+
+```text
+~/.local/share/github-project-monitor/install-logs/
 ```
 
 有些工具更新后仍然需要自己的 install、build、restart 或 post-update 步骤。这个 app 的目标是先让你看清本机真实状态，再决定下一步。
