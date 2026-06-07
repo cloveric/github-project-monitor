@@ -40,6 +40,16 @@ GitHub Project Monitor gives you one local dashboard to answer:
   path.
 - **Two update modes** - update by branch commit with `git pull --ff-only`, or
   update by latest GitHub Release tag.
+- **Update plan** - preview safe branch/release updates, see blocked dirty
+  projects, then run the confirmed plan from write mode.
+- **Post-update steps** - attach project-specific commands such as dependency
+  install, build, restart, or smoke tests in your local watchlist.
+- **Snapshots and trends** - save scan history, surface recent snapshots, and
+  remember when a project was last dirty.
+- **Multi-instance view** - group the same GitHub repository across Codex,
+  Claude, plugins, skills, and workspaces without hiding duplicate installs.
+- **Local service hints** - show configured restart commands and detected
+  listening ports when a project has service metadata.
 - **Safe uninstall** - moves clean Git worktrees to a local trash directory
   instead of deleting them directly.
 - **Watchlist plus discovery** - keep stable machine-specific entries in
@@ -71,6 +81,10 @@ The dashboard includes:
 - **Installed Projects** - filter by all, behind, release, dirty, or clean.
 - **Local Scanner** - include local projects installed as apps, skills, plugins,
   MCP servers, and workspaces.
+- **Update Plan** - review safe updates and blocked projects before running
+  them.
+- **Instances and History** - inspect duplicate installs and recent scan
+  snapshots.
 - **Actions** - install, update by commit, update by release, copy path, and move
   to trash.
 
@@ -83,11 +97,19 @@ The tool is intentionally local-first and conservative.
   `git pull --ff-only`.
 - Release updates resolve the latest GitHub Release, fetch only that tag, then
   check out the tag in detached HEAD mode.
+- The Web GUI action endpoint requires a local Host header, JSON requests, and a
+  per-server action token before it can install, update, or move projects.
 - Agent-assisted installs run the selected local CLI inside the cloned project
   and write logs under:
 
 ```text
 ~/.local/share/github-project-monitor/install-logs/
+```
+- If cloning succeeds but agent-assisted setup fails, the partial checkout is
+  preserved under:
+
+```text
+~/.local/share/github-project-monitor/partial/
 ```
 - Uninstall moves the worktree to:
 
@@ -158,7 +180,17 @@ GitHub repositories go in `projects`:
   "name": "hyperframes",
   "repo": "heygen-com/hyperframes",
   "visibility": "public",
-  "path": "/Users/me/projects/hyperframes"
+  "path": "/Users/me/projects/hyperframes",
+  "postUpdate": [
+    {"name": "Install dependencies", "command": "bun install"},
+    {"name": "Build", "command": "bun run build"}
+  ],
+  "service": {
+    "name": "HyperFrames",
+    "match": "/Users/me/projects/hyperframes",
+    "restart": "bun run dev",
+    "log": "logs/dev.log"
+  }
 }
 ```
 
@@ -179,6 +211,9 @@ npm packages, including npm-launched MCP servers, go in `packages`:
 Use `configuredVersion: "latest"` for tools intentionally launched through
 `npx ...@latest`. Use an exact version if you want the monitor to report when a
 package is behind.
+
+`postUpdate` and `service` are optional local-only fields. Keep machine-specific
+commands in `watchlist.local.json`, not in the public sample watchlist.
 
 ## Local Discovery Roots
 

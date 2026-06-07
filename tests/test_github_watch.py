@@ -6,20 +6,31 @@ import subprocess
 
 from github_watch import (
     ActionError,
+    ProjectStatus,
+    attach_history_insights,
+    build_update_plan,
     build_install_agent_command,
+    check_entry_safe,
+    check_project,
     classify_package_version,
     classify_branch_status,
     classify_release_status,
+    detect_project_service,
+    diagnostic_for_status,
     infer_category,
     install_repository,
     is_github_repo_slug,
     merge_project_entries,
+    normalize_post_update_steps,
     normalize_install_agent,
     normalize_github_repository,
     parse_git_porcelain,
     parse_ahead_behind,
     perform_action,
     repo_slug_from_url,
+    run_post_update_steps,
+    save_history_snapshot,
+    load_history_snapshots,
     select_latest_release,
     trash_project,
     update_project_to_commit,
@@ -28,6 +39,29 @@ from github_watch import (
 
 
 class GitHubWatchTests(unittest.TestCase):
+    def status(self, **overrides):
+        values = {
+            "kind": "git",
+            "path": "/tmp/project",
+            "repo": "owner/project",
+            "name": "project",
+            "visibility": "public",
+            "branch": "main",
+            "upstream": "origin/main",
+            "ahead": 0,
+            "behind": 0,
+            "dirty": False,
+            "branch_status": "sync",
+            "current_tag": "v1.0.0",
+            "latest_release": "v1.0.0",
+            "latest_release_published_at": None,
+            "release_status": "release-current",
+            "release_commits_behind": 0,
+            "fetch_status": "skipped",
+        }
+        values.update(overrides)
+        return ProjectStatus(**values)
+
     def git(self, args, cwd):
         return subprocess.run(
             ["git", *args],
@@ -142,6 +176,104 @@ class GitHubWatchTests(unittest.TestCase):
             "version-unavailable",
         )
 
+    def test_build_update_plan_lists_safe_updates_and_blocked_items(self):
+        statuses = [
+            self.status(name="behind", path="/tmp/behind", branch_status="behind", behind=2),
+            self.status(
+                name="release",
+                path="/tmp/release",
+                branch_status="sync",
+                current_tag="v1.0.0",
+                latest_release="v1.1.0",
+                release_status="release-behind",
+                release_commits_behind=3,
+            ),
+            self.status(
+                name="dirty-release",
+                path="/tmp/dirty",
+                dirty=True,
+                branch_status="dirty",
+                current_tag="v1.0.0",
+                latest_release="v1.1.0",
+                release_status="release-behind",
+                release_commits_behind=3,
+            ),
+        ]
+
+        plan = build_update_plan(statuses)
+
+        self.assertEqual([item["action"] for item in plan["actions"]], [
+            "updateCommit",
+            "updateRelease",
+        ])
+        self.assertEqual(plan["actions"][0]["name"], "behind")
+        self.assertEqual(plan["blocked"][0]["name"], "dirty-release")
+        self.assertIn("dirty", plan["blocked"][0]["reason"])
+
+    def test_history_snapshots_attach_last_dirty_and_trend(self):
+        with TemporaryDirectory() as tmpdir:
+            history_path = Path(tmpdir) / "snapshots.jsonl"
+            save_history_snapshot(
+                [self.status(path="/tmp/project", dirty=True, branch_status="dirty")],
+                {"projects": 1},
+                history_path,
+                now="2026-06-01T00:00:00+08:00",
+            )
+            snapshots = load_history_snapshots(history_path, limit=5)
+            status = self.status(path="/tmp/project", dirty=False, branch_status="sync")
+            attach_history_insights([status], snapshots)
+
+        self.assertEqual(status.last_dirty_seen_at, "2026-06-01T00:00:00+08:00")
+        self.assertEqual(status.previous_branch_status, "dirty")
+        self.assertEqual(status.status_trend, "improved")
+
+    def test_diagnostic_for_status_explains_common_failures(self):
+        invalid = self.status(branch_status="invalid", error="not a git worktree")
+        npm = self.status(kind="npm", release_status="version-unavailable", fetch_status="fail:npm")
+        private_release = self.status(
+            visibility="private",
+            latest_release=None,
+            release_status="release-unavailable",
+        )
+
+        self.assertIn("not a git worktree", diagnostic_for_status(invalid))
+        self.assertIn("npm", diagnostic_for_status(npm))
+        self.assertIn("release", diagnostic_for_status(private_release))
+
+    def test_normalize_and_run_post_update_steps(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            steps = normalize_post_update_steps(["python3 -c \"open('ok.txt','w').write('ok')\""])
+            results = run_post_update_steps(steps, root, timeout=30)
+
+            self.assertEqual(results[0]["status"], "ok")
+            self.assertEqual((root / "ok.txt").read_text(encoding="utf-8"), "ok")
+
+    def test_detect_project_service_uses_configured_match_and_ports(self):
+        service = detect_project_service(
+            {
+                "name": "monitor",
+                "path": "/Users/me/projects/monitor",
+                "service": {
+                    "name": "Monitor Web",
+                    "match": "github_watch.py web",
+                    "restart": "python3 github_watch.py web",
+                },
+            },
+            [
+                {
+                    "pid": 123,
+                    "command": "python3 github_watch.py web",
+                    "ports": [8765],
+                }
+            ],
+        )
+
+        self.assertEqual(service["name"], "Monitor Web")
+        self.assertTrue(service["running"])
+        self.assertEqual(service["ports"], [8765])
+        self.assertEqual(service["restart"], "python3 github_watch.py web")
+
     def test_github_repo_slug_validation(self):
         self.assertTrue(is_github_repo_slug("openai/skills"))
         self.assertTrue(is_github_repo_slug("cloveric/github-project-monitor"))
@@ -173,7 +305,7 @@ class GitHubWatchTests(unittest.TestCase):
             "app",
         )
 
-    def test_merge_project_entries_deduplicates_watchlist_and_scan_results(self):
+    def test_merge_project_entries_deduplicates_by_path_not_repo(self):
         primary = [
             {
                 "name": "monitor",
@@ -198,8 +330,42 @@ class GitHubWatchTests(unittest.TestCase):
 
         self.assertEqual([item["repo"] for item in merged], [
             "cloveric/github-project-monitor",
+            "cloveric/github-project-monitor",
             "openai/skills",
         ])
+        self.assertEqual(
+            [item["path"] for item in merged],
+            [
+                "/Users/me/projects/github-project-monitor",
+                "/Users/me/other/github-project-monitor",
+                "/Users/me/.codex/skills",
+            ],
+        )
+
+    def test_check_project_marks_existing_non_git_paths_invalid(self):
+        with TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "not-git"
+            path.mkdir()
+
+            status = check_project(
+                {"name": "not-git", "repo": "", "path": str(path), "visibility": "private"},
+                no_fetch=True,
+                include_prereleases=False,
+            )
+
+        self.assertEqual(status.branch_status, "invalid")
+        self.assertEqual(status.fetch_status, "skipped")
+        self.assertEqual(status.error, "not a git worktree")
+
+    def test_safe_check_entry_returns_error_status_for_malformed_entries(self):
+        status = check_entry_safe(
+            {"name": "broken", "repo": "owner/broken"},
+            no_fetch=True,
+            include_prereleases=False,
+        )
+
+        self.assertEqual(status.branch_status, "error")
+        self.assertIn("path", status.error)
 
     def test_normalize_github_repository_keeps_store_fields(self):
         normalized = normalize_github_repository(
@@ -309,6 +475,30 @@ class GitHubWatchTests(unittest.TestCase):
             self.assertEqual(direct_result["installerAgent"], "direct")
             run_agent.assert_not_called()
             self.assertEqual(clone_count, 2)
+
+    def test_install_repository_quarantines_partial_clone_when_agent_fails(self):
+        with TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            install_root = root / "projects"
+            destination = install_root / "example"
+
+            def fake_clone(args, timeout=8):
+                destination.mkdir(parents=True)
+                return subprocess.CompletedProcess(["gh", *args], 0, stdout="", stderr="")
+
+            with (
+                patch("github_watch.Path.home", return_value=root),
+                patch("github_watch.shutil.which", return_value="/usr/bin/gh"),
+                patch("github_watch.run_gh", side_effect=fake_clone),
+                patch("github_watch.run_install_agent", side_effect=ActionError("agent failed")),
+            ):
+                with self.assertRaises(ActionError) as context:
+                    install_repository("owner/example", str(install_root), "codex")
+
+            self.assertFalse(destination.exists())
+            partial_root = root / ".local" / "share" / "github-project-monitor" / "partial"
+            self.assertTrue(partial_root.exists())
+            self.assertIn("partial clone moved to", str(context.exception))
 
     def test_trash_project_moves_clean_git_worktree_to_local_trash(self):
         with TemporaryDirectory() as tmpdir:

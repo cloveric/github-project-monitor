@@ -6,7 +6,7 @@
     <title>GitHub Store</title>
     <link rel="icon" href="data:," />
     <link rel="stylesheet" href="/assets/app.css" />
-    <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js" defer></script>
+    <script src="/assets/icons.js" defer></script>
   </head>
   <body>
     <div class="store-shell">
@@ -30,6 +30,14 @@
           <a href="#scanner" class="nav-item">
             <i data-lucide="radar"></i>
             <span>Scanner</span>
+          </a>
+          <a href="#update-plan" class="nav-item">
+            <i data-lucide="play"></i>
+            <span>Plan</span>
+          </a>
+          <a href="#history" class="nav-item">
+            <i data-lucide="file-text"></i>
+            <span>History</span>
           </a>
           <a href="#actions" class="nav-item">
             <i data-lucide="wrench"></i>
@@ -67,7 +75,11 @@
               <option value="direct">Git only</option>
             </select>
           </label>
-          <a class="icon-button secondary" href="/api/report.md?noFetch=1&discover=1" target="_blank" rel="noreferrer">
+          <label class="write-mode">
+            <input id="writeToggle" type="checkbox" />
+            <span id="writeModeStatus">Read only</span>
+          </label>
+          <a id="reportLink" class="icon-button secondary" href="/api/report.md?noFetch=1&discover=1" target="_blank" rel="noreferrer">
             <i data-lucide="file-text"></i>
             <span>Report</span>
           </a>
@@ -144,12 +156,63 @@
                 <input id="preToggle" type="checkbox" />
                 <span>Prereleases</span>
               </label>
+              <label class="switch">
+                <input id="postUpdateToggle" type="checkbox" />
+                <span>Post-update steps</span>
+              </label>
             </div>
             <div class="scan-roots">
               <span>Scan roots</span>
               <code id="scanRoots">Loading</code>
             </div>
           </section>
+        </section>
+
+        <section class="planning-grid">
+          <section id="update-plan" class="panel plan-panel" aria-label="Update plan">
+            <div class="panel-heading">
+              <div>
+                <h2>Update Plan</h2>
+                <p>Review branch and release updates before running them in write mode.</p>
+              </div>
+              <div class="panel-actions">
+                <span id="planCount" class="panel-count">0 actions</span>
+                <button id="runPlanButton" class="icon-button primary compact-action" type="button" disabled>
+                  <i data-lucide="play"></i>
+                  <span>Run Plan</span>
+                </button>
+              </div>
+            </div>
+            <div id="planRows" class="stack-list">
+              <div class="empty-row compact-empty">No update plan yet</div>
+            </div>
+          </section>
+
+          <section id="instances" class="panel instance-panel" aria-label="Multiple installed instances">
+            <div class="panel-heading">
+              <div>
+                <h2>Instances</h2>
+                <p>Same repository installed across tools, plugins, skills, and workspaces.</p>
+              </div>
+              <span id="instanceCount" class="panel-count">0 groups</span>
+            </div>
+            <div id="instanceRows" class="stack-list">
+              <div class="empty-row compact-empty">No duplicate installations</div>
+            </div>
+          </section>
+        </section>
+
+        <section id="history" class="panel history-panel" aria-label="Scan history">
+          <div class="panel-heading">
+            <div>
+              <h2>History</h2>
+              <p>Recent snapshots and dirty-state memory for the local machine.</p>
+            </div>
+            <span id="historyCount" class="panel-count">0 snapshots</span>
+          </div>
+          <div id="historyRows" class="history-strip">
+            <div class="empty-row compact-empty">No snapshots yet</div>
+          </div>
         </section>
 
         <section id="installed" class="panel installed-panel" aria-label="Installed projects">
@@ -181,13 +244,14 @@
                   <th>Local State</th>
                   <th>Branch</th>
                   <th>Release</th>
+                  <th>Service</th>
                   <th>Path</th>
                   <th></th>
                 </tr>
               </thead>
               <tbody id="projectRows">
                 <tr>
-                  <td colspan="6" class="empty-row">Loading</td>
+                  <td colspan="7" class="empty-row">Loading</td>
                 </tr>
               </tbody>
             </table>

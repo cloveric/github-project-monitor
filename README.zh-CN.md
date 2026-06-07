@@ -31,6 +31,11 @@ GitHub Project Monitor 用一个本地 dashboard 回答这些问题：
 - **全面本地扫描** - 扫描常见的 project、skill、plugin、MCP、agent、workspace 根目录。
 - **已安装项目审计** - 展示 branch、upstream、ahead/behind、dirty files、untracked files、visibility、category、release status 和本地路径。
 - **两种更新方式** - 可以按 branch commit 执行 `git pull --ff-only`，也可以按最新 GitHub Release tag 更新。
+- **更新计划** - 先预览安全的 branch/release 更新和被 dirty 状态阻塞的项目，再在写入模式里确认执行。
+- **更新后步骤** - 在本地 watchlist 里为项目配置依赖安装、构建、重启或 smoke test 命令。
+- **快照与趋势** - 保存扫描历史，展示最近 snapshot，并记住项目上次变脏时间。
+- **多实例视图** - 同一个 GitHub repo 在 Codex、Claude、插件、skill、workspace 多处安装时聚合展示，但不隐藏重复实例。
+- **本机服务提示** - 有 service 配置时显示 restart 命令，并尽量展示匹配到的监听端口。
 - **安全卸载** - 不直接删除，而是把干净的 Git worktree 移入本地 trash 目录。
 - **watchlist + discovery** - `watchlist.local.json` 记录稳定的个人机器路径，Web GUI 同时能发现还没写进 watchlist 的项目。
 - **MCP/npm 感知** - 支持监控 `@playwright/mcp` 这类 npm package，以及 floating `latest` 配置。
@@ -55,6 +60,8 @@ Dashboard 包含：
 - **Store Search** - 优先通过已登录的 `gh api` 搜索 GitHub，失败时回退到 public GitHub API，然后可用 Codex、Claude Code 或纯 Git 安装。
 - **Installed Projects** - 按 all、behind、release、dirty、clean 过滤本地项目。
 - **Local Scanner** - 扫描作为 app、skill、plugin、MCP server、workspace 安装的项目。
+- **Update Plan** - 执行前先审查可安全更新的项目和被阻塞的项目。
+- **Instances and History** - 查看重复安装和最近扫描快照。
 - **Actions** - 安装、按 commit 更新、按 release 更新、复制路径、移入 trash。
 
 ## 安全模型
@@ -64,6 +71,7 @@ Dashboard 包含：
 - 默认不会更新或移除 dirty Git worktree。
 - 分支更新执行 `git fetch --all --prune --no-tags`，然后执行 `git pull --ff-only`。
 - Release 更新会读取最新 GitHub Release，只 fetch 目标 tag，然后以 detached HEAD 方式 checkout 到该 tag。
+- Web GUI 的动作接口要求本地 Host、JSON request，以及当前 server 生成的 action token，才允许安装、更新或移入 trash。
 - 卸载会把 worktree 移入：
 
 ```text
@@ -74,6 +82,12 @@ Agent 辅助安装会在 clone 后调用选中的本地 CLI，并把日志写入
 
 ```text
 ~/.local/share/github-project-monitor/install-logs/
+```
+
+如果 clone 成功但 agent 辅助安装失败，半安装目录会保留到：
+
+```text
+~/.local/share/github-project-monitor/partial/
 ```
 
 有些工具更新后仍然需要自己的 install、build、restart 或 post-update 步骤。这个 app 的目标是先让你看清本机真实状态，再决定下一步。
@@ -136,7 +150,17 @@ GitHub repositories 放在 `projects`：
   "name": "hyperframes",
   "repo": "heygen-com/hyperframes",
   "visibility": "public",
-  "path": "/Users/me/projects/hyperframes"
+  "path": "/Users/me/projects/hyperframes",
+  "postUpdate": [
+    {"name": "Install dependencies", "command": "bun install"},
+    {"name": "Build", "command": "bun run build"}
+  ],
+  "service": {
+    "name": "HyperFrames",
+    "match": "/Users/me/projects/hyperframes",
+    "restart": "bun run dev",
+    "log": "logs/dev.log"
+  }
 }
 ```
 
@@ -155,6 +179,8 @@ npm packages，包括通过 npm 启动的 MCP servers，放在 `packages`：
 ```
 
 如果某个工具故意通过 `npx ...@latest` 启动，可以使用 `configuredVersion: "latest"`。如果你希望监控 pinned version 是否落后，请写入精确版本号。
+
+`postUpdate` 和 `service` 都是可选的本机字段。机器相关命令建议放在 `watchlist.local.json`，不要放进公开示例 watchlist。
 
 ## 本地扫描根目录
 

@@ -5,6 +5,11 @@ const state = {
   filter: "all",
   loading: false,
   searching: false,
+  actionToken: "",
+  updatePlan: { actions: [], blocked: [], summary: {} },
+  instanceGroups: [],
+  history: { snapshots: [] },
+  writeModeUntil: 0,
 };
 
 const rows = document.querySelector("#projectRows");
@@ -16,9 +21,17 @@ const githubSearchInput = document.querySelector("#githubSearchInput");
 const searchButton = document.querySelector("#searchButton");
 const installRootInput = document.querySelector("#installRootInput");
 const installerAgentSelect = document.querySelector("#installerAgentSelect");
+const reportLink = document.querySelector("#reportLink");
 const scanToggle = document.querySelector("#scanToggle");
 const fastToggle = document.querySelector("#fastToggle");
 const preToggle = document.querySelector("#preToggle");
+const postUpdateToggle = document.querySelector("#postUpdateToggle");
+const writeToggle = document.querySelector("#writeToggle");
+const writeModeStatus = document.querySelector("#writeModeStatus");
+const runPlanButton = document.querySelector("#runPlanButton");
+const planRows = document.querySelector("#planRows");
+const instanceRows = document.querySelector("#instanceRows");
+const historyRows = document.querySelector("#historyRows");
 const toast = document.querySelector("#toast");
 
 function escapeHtml(value) {
@@ -62,6 +75,24 @@ function isReleaseCheckout(project) {
 
 function isLatestReleaseCheckout(project) {
   return isReleaseCheckout(project) && project.latest_release && project.current_tag === project.latest_release;
+}
+
+function isWriteMode() {
+  return state.writeModeUntil > Date.now();
+}
+
+function updateWriteMode() {
+  if (!isWriteMode()) {
+    state.writeModeUntil = 0;
+    writeToggle.checked = false;
+    writeModeStatus.textContent = "Read only";
+  } else {
+    const remaining = Math.ceil((state.writeModeUntil - Date.now()) / 60000);
+    writeModeStatus.textContent = `Write ${remaining}m`;
+  }
+  renderRows();
+  renderSearchRows();
+  renderPlan();
 }
 
 function branchLine(project) {
@@ -117,6 +148,20 @@ function releaseLine(project) {
     ? `<span class="meta-text">published ${escapeHtml(published)}</span>`
     : "";
   return `${escapeHtml(current)} <span class="meta-text">latest ${escapeHtml(latest)}</span>${publishedLine}`;
+}
+
+function serviceLine(project) {
+  if (!project.service_name) {
+    return `<span class="meta-text">No service metadata</span>`;
+  }
+  const status = project.service_running ? "running" : "stopped";
+  const ports = Array.isArray(project.service_ports) && project.service_ports.length
+    ? `:${project.service_ports.join(", :")}`
+    : "no ports";
+  const restart = project.service_restart
+    ? `<span class="meta-text">${escapeHtml(project.service_restart)}</span>`
+    : "";
+  return `<span class="pill ${project.service_running ? "sync" : "neutral"}">${escapeHtml(status)}</span><span class="meta-text">${escapeHtml(project.service_name)} · ${escapeHtml(ports)}</span>${restart}`;
 }
 
 function localSignal(project) {
@@ -180,12 +225,12 @@ function renderRows() {
   );
 
   if (state.loading) {
-    rows.innerHTML = `<tr><td colspan="6" class="empty-row">Checking local projects</td></tr>`;
+    rows.innerHTML = `<tr><td colspan="7" class="empty-row">Checking local projects</td></tr>`;
     return;
   }
 
   if (!filtered.length) {
-    rows.innerHTML = `<tr><td colspan="6" class="empty-row">No installed projects match this view</td></tr>`;
+    rows.innerHTML = `<tr><td colspan="7" class="empty-row">No installed projects match this view</td></tr>`;
     return;
   }
 
@@ -196,29 +241,36 @@ function renderRows() {
           ? `https://www.npmjs.com/package/${project.package}`
           : project.html_url || `https://github.com/${project.repo}`;
       const targetLabel = project.kind === "npm" ? project.package : project.repo || project.name;
-      const disabled = project.kind === "npm" || project.branch === "missing" ? "disabled" : "";
+      const actionDisabled = !isWriteMode() || project.kind === "npm" || project.branch === "missing" ? "disabled" : "";
+      const postSteps = Array.isArray(project.post_update_steps) && project.post_update_steps.length
+        ? `<span class="meta-text">${project.post_update_steps.length} post-update steps</span>`
+        : "";
+      const diagnosis = project.diagnostic
+        ? `<span class="meta-text">${escapeHtml(project.diagnostic)}</span>`
+        : "";
       return `
         <tr>
           <td>
             <span class="project-name">${escapeHtml(project.name)}</span>
             <a class="repo-name" href="${escapeHtml(projectUrl)}" target="_blank" rel="noreferrer">${escapeHtml(targetLabel)}</a>
           </td>
-          <td>${localSignal(project)}</td>
+          <td>${localSignal(project)}${diagnosis}</td>
           <td>${branchLine(project)}<span class="meta-text">${commitLine(project)}</span></td>
-          <td>${releaseLine(project)}<span class="meta-text">${escapeHtml(project.release_status)}</span></td>
+          <td>${releaseLine(project)}<span class="meta-text">${escapeHtml(project.release_status)}</span>${postSteps}</td>
+          <td>${serviceLine(project)}</td>
           <td><span class="path-text">${escapeHtml(project.path)}</span></td>
           <td>
             <div class="row-actions">
               <button class="tool-button" type="button" data-local-action="copy" data-path="${escapeHtml(project.path)}" title="Copy path">
                 <i data-lucide="copy"></i>
               </button>
-              <button class="tool-button" type="button" ${disabled} data-local-action="updateCommit" data-path="${escapeHtml(project.path)}" title="Update to branch commit">
+              <button class="tool-button" type="button" ${actionDisabled} data-local-action="updateCommit" data-path="${escapeHtml(project.path)}" title="Update to branch commit">
                 <i data-lucide="git-pull-request-arrow"></i>
               </button>
-              <button class="tool-button" type="button" ${disabled} data-local-action="updateRelease" data-path="${escapeHtml(project.path)}" data-repo="${escapeHtml(project.repo || "")}" title="Update to latest release">
+              <button class="tool-button" type="button" ${actionDisabled} data-local-action="updateRelease" data-path="${escapeHtml(project.path)}" data-repo="${escapeHtml(project.repo || "")}" title="Update to latest release">
                 <i data-lucide="tag"></i>
               </button>
-              <button class="tool-button danger-action" type="button" ${disabled} data-local-action="uninstall" data-path="${escapeHtml(project.path)}" title="Move to trash">
+              <button class="tool-button danger-action" type="button" ${actionDisabled} data-local-action="uninstall" data-path="${escapeHtml(project.path)}" title="Move to trash">
                 <i data-lucide="trash-2"></i>
               </button>
             </div>
@@ -263,7 +315,7 @@ function renderSearchRows() {
             <span class="meta-text">${escapeHtml(repo.pushed_at || repo.updated_at || "")}</span>
           </td>
           <td>
-            <button class="icon-button compact-action ${installed ? "secondary" : "primary"}" type="button" data-store-action="install" data-repo="${escapeHtml(repo.full_name)}" ${installed ? "disabled" : ""}>
+            <button class="icon-button compact-action ${installed ? "secondary" : "primary"}" type="button" data-store-action="install" data-repo="${escapeHtml(repo.full_name)}" ${installed || !isWriteMode() ? "disabled" : ""}>
               <i data-lucide="${installed ? "check" : "download"}"></i>
               <span>${installed ? "Installed" : "Install"}</span>
             </button>
@@ -275,31 +327,97 @@ function renderSearchRows() {
   createIcons();
 }
 
+function renderPlan() {
+  const actions = state.updatePlan.actions || [];
+  const blocked = state.updatePlan.blocked || [];
+  document.querySelector("#planCount").textContent = `${actions.length} actions`;
+  runPlanButton.disabled = !isWriteMode() || !actions.length;
+
+  if (!actions.length && !blocked.length) {
+    planRows.innerHTML = `<div class="empty-row compact-empty">No safe updates waiting</div>`;
+    createIcons();
+    return;
+  }
+
+  const actionRows = actions
+    .map((item) => `
+      <article class="stack-item">
+        <div>
+          <strong>${escapeHtml(item.label || item.name)}</strong>
+          <span>${escapeHtml(item.reason || item.action)}</span>
+          ${(item.postUpdateSteps || []).length ? `<span>${item.postUpdateSteps.length} post-update steps</span>` : ""}
+        </div>
+        <code>${escapeHtml(item.path)}</code>
+      </article>
+    `)
+    .join("");
+  const blockedRows = blocked
+    .map((item) => `
+      <article class="stack-item blocked">
+        <div>
+          <strong>${escapeHtml(item.name)}</strong>
+          <span>${escapeHtml(item.reason)}</span>
+        </div>
+        <code>${escapeHtml(item.path)}</code>
+      </article>
+    `)
+    .join("");
+  planRows.innerHTML = `${actionRows}${blockedRows}`;
+  createIcons();
+}
+
+function renderInstanceGroups() {
+  const groups = state.instanceGroups || [];
+  document.querySelector("#instanceCount").textContent = `${groups.length} groups`;
+  if (!groups.length) {
+    instanceRows.innerHTML = `<div class="empty-row compact-empty">No duplicate installations</div>`;
+    return;
+  }
+  instanceRows.innerHTML = groups
+    .map((group) => `
+      <article class="stack-item">
+        <div>
+          <strong>${escapeHtml(group.repo)}</strong>
+          <span>${group.instances} instances · ${group.dirty} dirty · ${group.branchBehind} branch behind · ${group.releaseBehind} release behind</span>
+          <span>${escapeHtml((group.categories || []).join(", "))}</span>
+        </div>
+        <code>${escapeHtml((group.paths || []).join(" · "))}</code>
+      </article>
+    `)
+    .join("");
+}
+
+function renderHistory() {
+  const snapshots = (state.history && state.history.snapshots) || [];
+  document.querySelector("#historyCount").textContent = `${snapshots.length} snapshots`;
+  if (!snapshots.length) {
+    historyRows.innerHTML = `<div class="empty-row compact-empty">No snapshots yet</div>`;
+    return;
+  }
+  historyRows.innerHTML = snapshots
+    .slice(-8)
+    .reverse()
+    .map((snapshot) => {
+      const summary = snapshot.summary || {};
+      return `
+        <article class="history-card">
+          <strong>${escapeHtml(formatDateTime(snapshot.createdAt) || snapshot.createdAt || "")}</strong>
+          <span>${escapeHtml(summary.projects ?? 0)} projects</span>
+          <span>${escapeHtml(summary.dirty ?? 0)} dirty</span>
+          <span>${escapeHtml(summary.releaseBehind ?? 0)} release</span>
+        </article>
+      `;
+    })
+    .join("");
+}
+
 function showToast(message) {
   toast.textContent = message;
   toast.classList.add("visible");
   window.setTimeout(() => toast.classList.remove("visible"), 2200);
 }
 
-async function loadConfig() {
-  const response = await fetch("/api/config");
-  if (!response.ok) return;
-  const config = await response.json();
-  installRootInput.value = config.installRoot || "";
-  if (Array.isArray(config.installAgents) && config.installAgents.length) {
-    installerAgentSelect.innerHTML = config.installAgents
-      .map((agent) => `<option value="${escapeHtml(agent.id)}">${escapeHtml(agent.label)}</option>`)
-      .join("");
-  }
-  installerAgentSelect.value = config.defaultInstallerAgent || "codex";
-  document.querySelector("#scanRoots").textContent = (config.scanRoots || []).join(" · ");
-}
-
-async function refresh() {
-  state.loading = true;
-  refreshButton.disabled = true;
-  renderRows();
-
+function buildCheckParams() {
   const params = new URLSearchParams({
     noFetch: fastToggle.checked ? "1" : "0",
     includePrereleases: preToggle.checked ? "1" : "0",
@@ -309,6 +427,36 @@ async function refresh() {
   if (installRoot) {
     params.append("extraRoot", installRoot);
   }
+  return params;
+}
+
+function updateReportLink() {
+  reportLink.href = `/api/report.md?${buildCheckParams().toString()}`;
+}
+
+async function loadConfig() {
+  const response = await fetch("/api/config");
+  if (!response.ok) return;
+  const config = await response.json();
+  state.actionToken = config.actionToken || "";
+  installRootInput.value = config.installRoot || "";
+  if (Array.isArray(config.installAgents) && config.installAgents.length) {
+    installerAgentSelect.innerHTML = config.installAgents
+      .map((agent) => `<option value="${escapeHtml(agent.id)}">${escapeHtml(agent.label)}</option>`)
+      .join("");
+  }
+  installerAgentSelect.value = config.defaultInstallerAgent || "codex";
+  document.querySelector("#scanRoots").textContent = (config.scanRoots || []).join(" · ");
+  updateReportLink();
+}
+
+async function refresh() {
+  state.loading = true;
+  refreshButton.disabled = true;
+  renderRows();
+
+  const params = buildCheckParams();
+  updateReportLink();
 
   try {
     const response = await fetch(`/api/check?${params.toString()}`);
@@ -318,6 +466,9 @@ async function refresh() {
     const payload = await response.json();
     state.projects = payload.projects || [];
     state.summary = payload.summary || {};
+    state.updatePlan = payload.updatePlan || { actions: [], blocked: [], summary: {} };
+    state.instanceGroups = payload.instanceGroups || [];
+    state.history = payload.history || { snapshots: [] };
     document.querySelector("#lastChecked").textContent = new Date().toLocaleString();
   } catch (error) {
     showToast(`Check failed: ${error.message}`);
@@ -327,6 +478,9 @@ async function refresh() {
     renderSummary();
     renderRows();
     renderSearchRows();
+    renderPlan();
+    renderInstanceGroups();
+    renderHistory();
   }
 }
 
@@ -360,9 +514,15 @@ async function searchGithub(event) {
 }
 
 async function postAction(payload) {
+  if (!state.actionToken) {
+    throw new Error("Missing action token; refresh the dashboard");
+  }
   const response = await fetch("/api/action", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      "X-GitHub-Watch-Token": state.actionToken,
+    },
     body: JSON.stringify(payload),
   });
   const result = await response.json();
@@ -419,6 +579,7 @@ rows.addEventListener("click", async (event) => {
       path,
       repo: button.dataset.repo || undefined,
       includePrereleases: preToggle.checked,
+      runPostUpdate: postUpdateToggle.checked,
     });
     await refresh();
   } catch (error) {
@@ -449,15 +610,43 @@ searchRows.addEventListener("click", async (event) => {
   }
 });
 
+runPlanButton.addEventListener("click", async () => {
+  const actions = state.updatePlan.actions || [];
+  if (!actions.length || !isWriteMode()) return;
+  const confirmed = window.confirm(`Run ${actions.length} planned update actions?`);
+  if (!confirmed) return;
+
+  try {
+    runPlanButton.disabled = true;
+    await postAction({
+      action: "runPlan",
+      actions,
+      includePrereleases: preToggle.checked,
+      runPostUpdate: postUpdateToggle.checked,
+    });
+    await refresh();
+  } catch (error) {
+    showToast(`Run plan failed: ${error.message}`);
+  } finally {
+    runPlanButton.disabled = !isWriteMode() || !actions.length;
+  }
+});
+
 refreshButton.addEventListener("click", refresh);
 githubSearchForm.addEventListener("submit", searchGithub);
 searchInput.addEventListener("input", renderRows);
 preToggle.addEventListener("change", refresh);
 fastToggle.addEventListener("change", refresh);
 scanToggle.addEventListener("change", refresh);
+installRootInput.addEventListener("input", updateReportLink);
+writeToggle.addEventListener("change", () => {
+  state.writeModeUntil = writeToggle.checked ? Date.now() + 5 * 60 * 1000 : 0;
+  updateWriteMode();
+});
 
 window.addEventListener("load", async () => {
   createIcons();
   await loadConfig();
   await refresh();
+  window.setInterval(updateWriteMode, 30000);
 });
